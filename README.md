@@ -27,12 +27,38 @@ publish_config.json 发布参数（库存上限/图片上限/折扣等）
 assets/             应用图标素材
 ```
 
+## 下载免安装版（GitHub Releases）
+
+免安装绿色版（双击即用，无需 Python / pip）由 **GitHub Actions 自动构建**，并作为
+**Release 附件**分发，不再随源码仓库提交打包产物：
+
+1. 打开仓库的 **Releases** 页面：仓库 → `Releases` → 最新版本。
+2. 下载 `pdd-workbench-portable-<版本>.zip`，解压整个文件夹即可使用。
+3. 首次运行双击「启动工作台.exe」，并按提示登录一次 1688 / 拼多多。
+
+本地也可自行打包标准版：`python build_portable.py`（产物在 `dist/PDD工作台_免安装版/`）。
+
 ## 使用
 
 1. 安装依赖：`pip install playwright customtkinter pandas openpyxl`
 2. 准备 1688 登录态：在 GUI 点「登录1688」扫码，会话落盘到本地 `data/`（不入库）。
 3. 单品搬迁：`python migrate_one.py https://detail.1688.com/offer/<ID>.html`
 4. 发布：在 GUI 打开工作台，点「发布」终验（本工具不自动提交到拼多多）。
+
+## CI 与发版
+
+- 工作流：`.github/workflows/build-portable.yml`，固定跑在 `windows-latest`
+  （免安装版是 Windows 专属：PyInstaller onedir → `.exe` + VBScript 启动器）。
+- **自动发布**：推送一个 `v*` 标签（如 `v1.0.0`）即触发构建，并把 zip 作为该标签的
+  Release 附件发布：
+  ```bash
+  git tag v1.0.0
+  git push origin v1.0.0
+  ```
+- **手动构建验证**：在 Actions 页点 `Build Portable` → `Run workflow`，构建出的 zip
+  会作为 Artifact 提供下载（14 天保留），不会创建 Release。
+- 标准版不含登录态 / 离线浏览器，可安全公开分发；如需离线浏览器用
+  `python build_portable.py --with-browsers` 本地生成。
 
 ## 说明
 

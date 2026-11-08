@@ -1,0 +1,96 @@
+# =============================================================================
+# 自动构建「免安装版」并作为 GitHub Release 附件分发
+# -----------------------------------------------------------------------------
+# 触发方式：
+#   1) 推送 tag（格式 v*，例如 v1.0.0）→ 自动构建并把 zip 作为 Release 附件发布。
+#   2) 手动 workflow_dispatch → 构建并把 zip 作为 Actions Artifact 供下载验证。
+#
+# 说明：
+#   - 免安装版是 Windows 专属（PyInstaller onedir → .exe + VBScript 启动器），
+#     因此本 CI 固定跑在 windows-latest。
+#   - 私密的登录态（data/、pdd_profile/）和浏览器不会被打包进标准版，
+#     标准版可安全公开分发；用户首次运行自行登录一次即可。
+#   - dist/ 仍被 .gitignore 排除，仓库只存源码，二进制只存在于 Release 附件。
+# =============================================================================
+name: Build Portable
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '打包版本号（仅用于命名 artifact，如 1.0.0-test）'
+        required: false
+        default: 'ci'
+
+# 创建 Release 需要向仓库写内容
+permissions:
+  contents: write
+
+# 同一 ref 不并行构建，新的会取消旧的
+concurrency:
+  group: build-portable-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # tag 触发用 tag 名；手动触发用输入的 version；兜底 ci
+  PKG_VERSION: >-
+    ${{ github.ref_type == 'tag' && github.ref_name
+        || (github.event.inputs.version != '' && github.event.inputs.version || 'ci') }}
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install build dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller pillow customtkinter jieba playwright openpyxl lxml
+
+      - name: Generate app icon (assets/app.ico)
+        run: python make_icon.py
+
+      - name: Build portable package (PyInstaller onedir)
+        run: python build_portable.py
+
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          $d = "dist/PDD工作台_免安装版"
+          if (-not (Test-Path "$d/PDDWorkbench.exe")) { throw "PDDWorkbench.exe 缺失，构建失败" }
+          if (-not (Test-Path "$d/启动工作台.exe"))  { throw "启动工作台.exe 缺失，启动器构建失败" }
+          Write-Host "✅ 构建产物校验通过"
+
+      - name: Package zip (UTF-8 文件名，保留中文目录)
+        shell: pwsh
+        run: |
+          python -c 'import zipfile,os; from pathlib import Path; root=Path("dist")/"PDD工作台_免安装版"; ver=os.environ.get("PKG_VERSION","ci"); out=Path("dist")/f"pdd-workbench-portable-{ver}.zip"; assert root.is_dir(), "构建输出目录缺失"; zf=zipfile.ZipFile(out,"w",zipfile.ZIP_DEFLATED); [zf.write(p, p.relative_to(root.parent)) for p in sorted(root.rglob("*")) if p.is_file()]; zf.close(); print("ZIP", out, f"{out.stat().st_size/1024/1024:.1f} MB")'
+
+      - name: Upload build artifact (manual dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pdd-workbench-portable-${{ env.PKG_VERSION }}
+          path: dist/pdd-workbench-portable-${{ env.PKG_VERSION }}.zip
+          retention-days: 14
+
+      - name: Create GitHub Release (tag push only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ver = "${{ env.PKG_VERSION }}"
+          $zip = "dist/pdd-workbench-portable-$ver.zip"
+          gh release create $ver $zip --title "PDD 工作台 $ver" --generate-notes
