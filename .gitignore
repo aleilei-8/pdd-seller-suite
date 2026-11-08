@@ -1,0 +1,39 @@
+# ===== 密钥 / 登录会话（绝对禁止提交）=====
+# 1688 登录态 cookie + localStorage
+data/
+# 持久化浏览器会话（含 1688 / PDD 登录态）
+pdd_profile/
+# 打包产物（含内嵌浏览器，体积 ~190MB）
+dist/
+# 编译 / 构建临时目录
+build/
+_build_venv/
+
+# ===== Python =====
+__pycache__/
+*.pyc
+src/__pycache__/
+*.egg-info/
+
+# ===== 备份文件 =====
+**/*.bak*
+*.bak
+
+# ===== 调试 / 抓取的页面快照（可能含会话令牌）=====
+debug_*.html
+
+# ===== 日志 / 临时 =====
+*.log
+_space_test.tmp
+
+# ===== 生成的核对报告（含抓取的商品业务数据）=====
+全量搬迁汇总.html
+新链接全量搬迁核对_*.html
+
+# ===== 抓取缓存 / 店铺业务数据 =====
+store_products.json
+suggest_cache.json
+
+# ===== 系统 =====
+.DS_Store
+Thumbs.db

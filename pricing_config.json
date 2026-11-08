@@ -1,0 +1,18 @@
+{
+  "commission_rate": 0.02,
+  "payment_fee_rate": 0.006,
+  "shipping": {
+    "mode": "fixed",
+    "fixed_fee": 3.0,
+    "remote_surcharge": 5.0,
+    "first_weight": 1.0,
+    "first_fee": 3.0,
+    "add_weight": 1.0,
+    "add_fee": 2.0,
+    "remote_first_fee": 10.0,
+    "remote_add_fee": 6.0
+  },
+  "target_net_margin": 0.25,
+  "default_other_fee": 0.0,
+  "markup_fallback": 2.8
+}

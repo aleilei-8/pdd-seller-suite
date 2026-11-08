@@ -1,0 +1,19 @@
+{
+  "category_keyword": "",
+  "category_path": [],
+  "freight_template": "",
+  "stock_cap": 5000,
+  "default_stock": 1000,
+  "max_carousel": 10,
+  "max_detail": 50,
+  "image_max_bytes": 8388608,
+  "price_source": "sku",
+  "single_price_ratio": 1.1,
+  "group_discount": 2.0,
+  "min_net_margin": 0.08,
+  "advice_price_pad": 10.0,
+  "auto_fill_attributes": true,
+  "auto_fill_brand": false,
+  "shipping_time": "",
+  "submit_only_if_core_ok": true
+}
