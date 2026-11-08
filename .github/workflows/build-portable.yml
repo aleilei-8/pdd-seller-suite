@@ -39,6 +39,8 @@ env:
   PKG_VERSION: >-
     ${{ github.ref_type == 'tag' && github.ref_name
         || (github.event.inputs.version != '' && github.event.inputs.version || 'ci') }}
+  # Windows runner 控制台默认 cp1252 无法编码中文，强制 Python UTF-8 模式（不影响本地）
+  PYTHONUTF8: "1"
 
 jobs:
   build:
