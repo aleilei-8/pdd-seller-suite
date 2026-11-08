@@ -30,10 +30,24 @@ assets/             应用图标素材
 ## 下载免安装版（GitHub Releases）
 
 免安装绿色版（双击即用，无需 Python / pip）由 **GitHub Actions 自动构建**，并作为
-**Release 附件**分发，不再随源码仓库提交打包产物：
+**Release 附件**分发，不再随源码仓库提交打包产物。提供两个版本：
 
-1. 打开仓库的 **Releases** 页面：仓库 → `Releases` → 最新版本。
-2. 下载 `pdd-workbench-portable-<版本>.zip`，解压整个文件夹即可使用。
+| 版本 | 标签 | 适用场景 |
+|---|---|---|
+| **纯代码版（默认）** | [`v1.0.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/v1.0.0) | 正式使用。**不含任何业务数据**。 |
+| **示例数据 Demo 版** | [`demo-v1.0.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/demo-v1.0.0) | 想直接体验界面与数据格式。内置【示例/脱敏】数据。 |
+
+> ⚠️ **纯代码版首次使用需自行采集**：该版本只含程序本身，打开后 `data/` 为空，
+> 请先在软件的「采集1688链接」里采集你自己的真实 1688 商品（结果落盘到本地 `data/`，不入库），
+> 才能看到货源、定价与上架清单。不要指望开箱即有现成商品。
+>
+> 🧪 **Demo 版说明**：内置的 `collected_1688.json` / `freight_rules.*` / `sample_*` 等
+> 均为【示例/脱敏】占位数据（商品ID、价格、图片、运费都是示例），**不是真实货源或真实运费**，
+> 仅供演示流程与数据格式，正式运营请用纯代码版并采集自有商品。
+
+下载步骤：
+1. 打开仓库的 **Releases** 页面：仓库 → `Releases` → 选择上面任一版本。
+2. 下载对应 `pdd-workbench-*-<版本>.zip`，解压整个文件夹即可使用。
 3. 首次运行双击「启动工作台.exe」，并按提示登录一次 1688 / 拼多多。
 
 本地也可自行打包标准版：`python build_portable.py`（产物在 `dist/PDD工作台_免安装版/`）。
