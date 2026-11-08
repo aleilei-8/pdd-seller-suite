@@ -30,12 +30,9 @@ CORE_FILES = [
     "pricing_config.json", "publish_config.json",
     "store_products.json", "suggest_cache.json",
 ]
-CORE_DATA = [
-    "collected_1688.json", "freight_rules.json", "freight_rules.csv",
-    "freight_rules.html", "sample_goods.json", "sample_listing.csv",
-    "sample_report_listing.csv", "sample_report_selection.csv",
-    "sample_report_selection.json",
-]
+# 标准版不再随包携带样本业务数据(纯代码分发): collected_1688.json / freight_rules.*
+# / sample_* 等含真实货源与运费规则, 不应分发给下载者。如需演示, 另发 demo 包。
+CORE_DATA = []
 # 登录态(敏感, 仅 --with-login 时复制)
 LOGIN_DATA = [
     "1688_state.json", "1688_channel.txt", "1688_profile_channel.txt",
