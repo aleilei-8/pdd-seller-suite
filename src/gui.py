@@ -47,6 +47,7 @@ import ai_assistant
 import monitor as monitor_mod
 import ad_roi
 import finance as finance_mod
+import competitor as competitor_mod
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -220,6 +221,7 @@ class _TabHost:
             ("AI 助手", "🤖"),
             ("广告投产", "📣"),
             ("财务对账", "📒"),
+            ("竞品监控", "🎯"),
         ]),
         ("运营分析", [
             ("选品评分", "🌟"),
@@ -468,6 +470,7 @@ class Workbench(ctk.CTk):
         self._tab_ai()
         self._tab_ad()
         self._tab_finance()
+        self._tab_competitor()
         self._tab_select()
         self._tab_title()
         self._tab_price()
@@ -511,6 +514,8 @@ class Workbench(ctk.CTk):
         self._monitor_status = ctk.CTkLabel(row2, text="未启用", font=F(11), text_color=UI_MUTED)
         self._monitor_status.pack(side="left", padx=8)
         self.monitor = monitor_mod.MonitorThread(self._emit, lambda: self.products)
+        self.competitor = competitor_mod.CompetitorThread(self._emit,
+                                                          lambda: competitor_mod.load_table())
 
     def _ai_append(self, who, text):
         self._ai_log.configure(state="normal")
@@ -542,6 +547,7 @@ class Workbench(ctk.CTk):
                     "orders": self.orders,
                     "ad_rows": getattr(self, "ad_rows", []),
                     "finance_result": getattr(self, "fin_result", None),
+                    "competitor_result": getattr(self, "comp_result", None),
                 })
             except Exception as e:
                 result = {"reply": f"出错了: {e}"}
@@ -813,6 +819,187 @@ class Workbench(ctk.CTk):
                             f"¥{r.ad_spend:.2f}", f"¥{r.net_before:.2f}",
                             f"¥{r.net_after:.2f}", f"{r.margin_after}%", r.advice],
                            tag=("alt" if r.net_after < 0 else ""))
+
+    # ---------- Tab 竞品监控 ----------
+    def _tab_competitor(self):
+        f = self.tabs.tab("竞品监控")
+        top = self._section(f, "① 竞品台账",
+                            "登记我方售价与竞品售价; 系统算价差并结合保本线判断能否跟价", "purple")
+        self._btn(top, "＋ 添加商品/竞品", self._open_competitor_add, "purple", 150)
+        self._btn(top, "EDIT 编辑选中", self._open_competitor_edit, "ghost", 120)
+        self._btn(top, "删除选中", self._delete_competitor, "red", 100)
+        self._btn(top, "刷新分析", self._render_competitor, "ghost", 100)
+        self._btn(top, "🔄 抓价", self._fetch_competitor_prices, "ghost", 90)
+        self._btn(top, "问 AI 比价", lambda: self._ai_quick("分析一下竞品价格"), "blue", 110)
+        self._comp_status = ctk.CTkLabel(top, text="定时复查: 未启用", font=F(11), text_color=UI_MUTED)
+        self._comp_status.pack(side="left", padx=8)
+        self._btn(top, "⏰ 定时复查", self._toggle_competitor_monitor, "orange", 110)
+
+        self._section_label(f, "② 比价与跟价建议", "竞品最低价 vs 我方售价; 保本线内才建议跟价", "green")
+        self.t_comp = Table(f, ["我方商品", "我方价", "竞品最低", "价差%", "竞争力", "跟价", "建议"],
+                            widths=[130, 66, 74, 60, 82, 96, 320], height=12)
+        self.t_comp.frame.pack(fill="both", expand=True, padx=14, pady=(2, 12))
+        self.comp_watches = competitor_mod.load_table()
+
+    def _render_competitor(self):
+        self.comp_watches = competitor_mod.load_table()
+        try:
+            target = float(self.config.target_net_margin)
+        except Exception:
+            target = 0.0
+        res = competitor_mod.analyze_all(self.comp_watches, target)
+        rows = res["rows"]
+        self.comp_result = res
+        self.t_comp.clear()
+        for r in rows:
+            tag = "alt" if r["level"] in ("严重劣势", "价格偏高") else ""
+            self.t_comp.add([
+                r["my_name"][:20], f"¥{r['my_price']}",
+                f"¥{r['lowest']}" if r.get("lowest") else "—",
+                f"{r.get('gap_pct', 0)}%",
+                r["level"], r["follow"], r["advice"],
+            ], tag=tag)
+
+    def _selected_watch(self):
+        sel = getattr(self.t_comp, "selection", None)
+        idx = sel() if callable(sel) else None
+        if not idx:
+            messagebox.showinfo("提示", "请先在表格里选中一个商品")
+            return None, None
+        try:
+            row = self.t_comp._rows[idx[0]]
+        except Exception:
+            row = None
+        if not row:
+            return None, None
+        key = str(row[0])
+        for w in self.comp_watches:
+            if w.key == key or w.my_name[:20] == key:
+                return w, self.comp_watches
+        return None, None
+
+    def _open_competitor_add(self):
+        self._competitor_dialog(None)
+
+    def _open_competitor_edit(self):
+        w, _ = self._selected_watch()
+        if w:
+            self._competitor_dialog(w)
+
+    def _competitor_dialog(self, watch):
+        d = ctk.CTkToplevel(self)
+        d.title("竞品台账" if watch else "添加竞品")
+        d.geometry("620x560")
+        d.transient(self)
+        rows = {}
+
+        def mk(label, val, w=180):
+            ctk.CTkLabel(d, text=label, font=F(11), text_color=UI_MUTED).pack(anchor="w", padx=16, pady=(8, 0))
+            e = ctk.CTkEntry(d, width=w, font=F(12))
+            e.insert(0, str(val or ""))
+            e.pack(anchor="w", padx=16)
+            rows[label] = e
+            return e
+
+        mk("我方商品ID", watch.key if watch else "")
+        mk("我方商品名", watch.my_name if watch else "")
+        mk("我方售价¥", watch.my_price if watch else "")
+        mk("进货价¥", watch.cost_price if watch else "")
+        mk("进货运费¥", watch.inbound if watch else "")
+        mk("发货运费¥", watch.outbound if watch else "")
+        ctk.CTkLabel(d, text="竞品(每行一个: 名称,售价,链接(可选),备注(可选))",
+                     font=F(12, True), text_color="#2f80ed").pack(anchor="w", padx=16, pady=(14, 0))
+        comp_txt = ctk.CTkTextbox(d, height=150, font=F(11))
+        comp_txt.pack(fill="both", expand=True, padx=16, pady=6)
+        if watch:
+            for c in watch.competitors or []:
+                comp_txt.insert("end", f"{c.get('name','')},{c.get('price','')},"
+                                       f"{c.get('url','')},{c.get('note','')}\n")
+        else:
+            comp_txt.insert("end", "对手A,32.9,,示例\n")
+
+        def save():
+            try:
+                key = rows["我方商品ID"].get().strip()
+                name = rows["我方商品名"].get().strip() or key
+                if not key:
+                    messagebox.showwarning("提示", "请填我方商品ID")
+                    return
+                comps = []
+                for line in comp_txt.get("1.0", "end").strip().splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if not parts[0]:
+                        continue
+                    try:
+                        price = float(parts[1]) if len(parts) > 1 else 0.0
+                    except ValueError:
+                        price = 0.0
+                    comps.append({"name": parts[0], "price": price,
+                                  "url": parts[2] if len(parts) > 2 else "",
+                                  "note": parts[3] if len(parts) > 3 else "",
+                                  "time": competitor_mod._now()})
+                w = competitor_mod.Watch(
+                    key=key, my_name=name,
+                    my_price=float(rows["我方售价¥"].get() or 0),
+                    cost_price=float(rows["进货价¥"].get() or 0),
+                    inbound=float(rows["进货运费¥"].get() or 0),
+                    outbound=float(rows["发货运费¥"].get() or 0),
+                    competitors=comps, updated=competitor_mod._now())
+                watches = competitor_mod.load_table()
+                if watch:
+                    watches = [w if x.key == watch.key else x for x in watches]
+                else:
+                    watches = [x for x in watches if x.key != key]
+                    watches.append(w)
+                competitor_mod.save_table(watches)
+                self._render_competitor()
+                self._set_status(f"竞品台账已保存: {name} ({len(comps)} 个竞品)")
+                d.destroy()
+            except ValueError:
+                messagebox.showerror("格式错误", "价格请填数字")
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+
+        self._btn(d, "保存", save, "green", 100)
+        self._btn(d, "取消", d.destroy, "ghost", 80)
+
+    def _delete_competitor(self):
+        w, watches = self._selected_watch()
+        if not w:
+            return
+        if not messagebox.askyesno("确认删除", f"删除竞品监控项「{w.my_name}」?"):
+            return
+        competitor_mod.save_table([x for x in watches if x.key != w.key])
+        self._render_competitor()
+        self._set_status("已删除")
+
+    def _fetch_competitor_prices(self):
+        def worker():
+            self._emit("competitor_info", "正在尝试抓取竞品价格(公开页面, 可能失败)...")
+            try:
+                r = competitor_mod.refresh_prices()
+                self._emit("competitor_info",
+                           f"抓价完成: 成功 {r['updated']} / 失败 {r['failed']} / 无链接 {r['skipped']}"
+                           " (失败的竞品请手动录入售价)")
+                self._emit("competitor_refresh", None)
+            except Exception as e:
+                self._emit("competitor_info", f"抓价出错: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _toggle_competitor_monitor(self):
+        if self.competitor.running:
+            self.competitor.stop()
+            self._comp_status.configure(text="定时复查: 未启用", text_color=UI_MUTED)
+            self._set_status("竞品定时复查已停止")
+        else:
+            if not competitor_mod.load_table():
+                messagebox.showinfo("提示", "请先在台账添加至少一个竞品商品")
+                return
+            cfg = competitor_mod.DEFAULT_CFG.copy()
+            cfg["enabled"] = True
+            self.competitor.start(cfg)
+            self._comp_status.configure(text="定时复查: 运行中", text_color="#1f9d55")
+            self._set_status("竞品定时复查已启动(每120分钟, 异常才提醒)")
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):
@@ -2694,6 +2881,29 @@ class Workbench(ctk.CTk):
         elif kind == "monitor_info":
             self._ai_append("⏰ 监控:", str(payload))
             self._set_status(str(payload))
+        elif kind == "competitor_alert":
+            rep = payload or {}
+            alerts = rep.get("alerts") or []
+            lines = [f"🎯 竞品监控发现 {len(alerts)} 个异常 ({rep.get('time','')}):"]
+            for a in alerts[:6]:
+                lines.append(f"  • [{a.get('type','')}] {a.get('title','')[:24]} — {a.get('detail','')}")
+            if len(alerts) > 6:
+                lines.append(f"  ... 另有 {len(alerts)-6} 个")
+            lines.append("详见 data/competitor_report.html")
+            self._ai_append("🎯 竞品:", "\n".join(lines))
+            self._set_status(f"🎯 竞品告警 {len(alerts)} 个, 详见 AI 助手页")
+            try:
+                self._render_competitor()
+            except Exception:
+                pass
+        elif kind == "competitor_info":
+            self._ai_append("🎯 竞品:", str(payload))
+            self._set_status(str(payload))
+        elif kind == "competitor_refresh":
+            try:
+                self._render_competitor()
+            except Exception:
+                pass
         elif kind == "err":
             if isinstance(payload, str) and payload.startswith("推流词"):
                 self._update_title_progress("err:" + payload)
@@ -2855,6 +3065,11 @@ class Workbench(ctk.CTk):
         try:
             if hasattr(self, "monitor"):
                 self.monitor.stop()
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "competitor"):
+                self.competitor.stop()
         except Exception:
             pass
         self.destroy()

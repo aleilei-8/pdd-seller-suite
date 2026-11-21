@@ -64,9 +64,10 @@ SYSTEM_PROMPT = """你是「拼多多全链路工作台」的 AI 助手, 负责�
 5. collect  采集1688商品。params: urls(数组, 从消息里抽取 detail.1688.com/offer/<数字> 链接或8位以上纯数字商品ID)
 6. ad_report  广告投产分析(需已导入推广报表)
 7. finance_report  全成本利润对账(把广告费扣进净利, 算真实净利; 需已导入订单CSV和推广报表)
-8. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
-9. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
-10. help  问你能做什么
+8. competitor_report  竞品价格监控(比价/跟价建议; 从竞品台账取数)
+9. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
+10. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
+11. help  问你能做什么
 
 规则: 只输出 JSON, 不要输出其他任何文字。数字字段输出为数字而非字符串。"""
 
@@ -119,7 +120,7 @@ def llm_parse(text: str, cfg: dict):
     if not j or j.get("action") not in (
             "price_calc", "select_report", "orders_summary",
             "stock_report", "collect", "ad_report", "finance_report",
-            "review", "chat", "help"):
+            "competitor_report", "review", "chat", "help"):
         return None
     j.setdefault("params", {})
     j.setdefault("reply", "")
@@ -192,6 +193,8 @@ def rule_parse(text: str):
         return {"action": "stock_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("对账", "真实利润", "真实净利", "广告后", "扣掉广告", "广告费扣", "全成本")):
         return {"action": "finance_report", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("竞品", "对手", "比价", "跟价", "别人卖", "对家")):
+        return {"action": "competitor_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("广告", "投产", "ROI", "roi", "推广", "点击成本", "投产比")):
         return {"action": "ad_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("点评", "AI建议", "给建议", " Analyze")):
@@ -414,6 +417,7 @@ HELP_TEXT = """🤖 我能帮你做这些(直接说人话就行):
 📦 库存预警   「检查库存」「有没有缺货风险」
 📣 广告投产   「分析广告投产」(先在广告投产页导入推广CSV)
 📒 财务对账   「算一下扣掉广告费后的真实利润」(订单CSV+推广CSV, 在财务对账页刷新)
+🎯 竞品比价   「分析竞品价格」「对手卖多少钱」(在竞品监控页登记台账, 结合保本线给跟价建议)
 📝 商品点评   「点评这几个商品」(配置模型给 AI 建议, 没有则用本地规则)
 🔗 采集预填   直接粘贴 1688 链接, 我帮你填进采集窗口
 ⏰ 定时监控   点上方「定时监控」设置无人值守(价格/库存异常才提醒)
@@ -461,6 +465,15 @@ def run_action(intent: dict, ctx: dict):
                                  "再在「广告投产」页导入推广报表 CSV，然后点「刷新对账」。"}
             import finance
             return {"reply": finance.render_report(res)}
+        if action == "competitor_report":
+            import competitor
+            watches = competitor.load_table()
+            res = ctx.get("competitor_result")
+            if not watches and not res:
+                return {"reply": ("还没有竞品台账。请到「🎯 竞品监控」页点「＋ 添加商品/竞品」，"
+                                  "登记我方售价和竞品售价; 也可以直接告诉我「我方卖X元, 竞品卖Y元」,")}
+            res = res or {"analysis": competitor.analyze_all(watches)["rows"]}
+            return {"reply": competitor.render_report(res)}
         if action == "review":
             return _do_review(params, ctx)
     except Exception as e:
