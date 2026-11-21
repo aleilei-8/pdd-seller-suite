@@ -44,6 +44,8 @@ import analysis
 import shipping as shipping_mod
 import invoice as invoice_mod
 import ai_assistant
+import monitor as monitor_mod
+import ad_roi
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -215,6 +217,7 @@ class _TabHost:
     GROUPS = [
         ("AI 中心", [
             ("AI 助手", "🤖"),
+            ("广告投产", "📣"),
         ]),
         ("运营分析", [
             ("选品评分", "🌟"),
@@ -459,6 +462,7 @@ class Workbench(ctk.CTk):
         # _TabHost.tab(name) 与原 CTkTabview.tab(name) 行为一致, 既有 _tab_* 无需改动。
         self.tabs = _TabHost(self)
         self._tab_ai()
+        self._tab_ad()
         self._tab_select()
         self._tab_title()
         self._tab_price()
@@ -477,6 +481,7 @@ class Workbench(ctk.CTk):
         self._btn(top, "🌟 选品报告", lambda: self._ai_quick("给我一份选品评分报告"), "purple", 108)
         self._btn(top, "📊 经营分析", lambda: self._ai_quick("分析一下店铺订单数据"), "green", 108)
         self._btn(top, "📦 库存预警", lambda: self._ai_quick("检查库存, 列出预警商品"), "orange", 108)
+        self._btn(top, "📝 AI点评", lambda: self._ai_quick("点评这几个商品"), "green", 100)
         self._btn(top, "⚙️ 模型设置", self._ai_settings, "ghost", 104)
 
         self._ai_log = ctk.CTkTextbox(f, font=F(12), wrap="word")
@@ -493,6 +498,14 @@ class Workbench(ctk.CTk):
         self._ai_entry.bind("<Return>", lambda _e: self._ai_send())
         self._ai_send_btn = self._btn(row, "发送 ▶", self._ai_send, "blue", 100)
         self._ai_running = False
+
+        # 定时监控: 第二行(无人值守入口)
+        row2 = ctk.CTkFrame(f, fg_color="transparent")
+        row2.pack(fill="x", padx=14, pady=(0, 8))
+        self._monitor_btn = self._btn(row2, "⏰ 定时监控", self._open_monitor_dialog, "orange", 112)
+        self._monitor_status = ctk.CTkLabel(row2, text="未启用", font=F(11), text_color=UI_MUTED)
+        self._monitor_status.pack(side="left", padx=8)
+        self.monitor = monitor_mod.MonitorThread(self._emit, lambda: self.products)
 
     def _ai_append(self, who, text):
         self._ai_log.configure(state="normal")
@@ -522,6 +535,7 @@ class Workbench(ctk.CTk):
                     "products": self.products,
                     "config": self.config,
                     "orders": self.orders,
+                    "ad_rows": getattr(self, "ad_rows", []),
                 })
             except Exception as e:
                 result = {"reply": f"出错了: {e}"}
@@ -561,6 +575,166 @@ class Workbench(ctk.CTk):
                              + ("(已接入)" if cfg.get("api_key") else "(未配置, 使用本地规则)"))
 
         self._btn(d, "保存", _save, "green", 110)
+
+    def _open_monitor_dialog(self):
+        """定时无人值守监控配置: 价格变化/库存预警, 异常才叫人。"""
+        cfg = monitor_mod.load_config()
+        d = ctk.CTkToplevel(self)
+        d.title("定时无人值守监控")
+        d.geometry("620x560")
+        d.minsize(560, 500)
+        d.transient(self)
+        try:
+            d.grab_set()
+        except Exception:
+            pass
+
+        ctk.CTkLabel(d, text="后台定期检查货源价格变化与 SKU 库存, 只在异常时通知你。\n"
+                             "价格监控会重采 1688 链接(较慢, 需登录态); 库存检查纯本地。",
+                     justify="left", font=F(11)).pack(anchor="w", padx=16, pady=(12, 6))
+
+        state_row = ctk.CTkFrame(d, fg_color="#eef3fb", corner_radius=8)
+        state_row.pack(fill="x", padx=16, pady=(0, 8))
+        state_lab = ctk.CTkLabel(state_row, text="监控状态: 运行中" if self.monitor.running
+                                 else "监控状态: 已停止", font=F(12, True),
+                                 text_color="#1f9d55" if self.monitor.running else "#999")
+        state_lab.pack(side="left", padx=12, pady=8)
+        nxt_lab = ctk.CTkLabel(state_row, text=f"下次检查约 {self.monitor.next_check}"
+                               if self.monitor.next_check else "", font=F(11), text_color=UI_MUTED)
+        nxt_lab.pack(side="left", padx=8)
+
+        fields = {}
+        for key, label, width in (("interval_min", "检查周期(分钟)", 110),
+                                  ("price_change_pct", "价格变动阈值%", 110),
+                                  ("low_stock", "低库存阈值", 110),
+                                  ("max_items", "最多重采数", 110)):
+            fr = ctk.CTkFrame(d, fg_color="transparent")
+            fr.pack(fill="x", padx=16, pady=4)
+            ctk.CTkLabel(fr, text=label, width=120, anchor="w", font=F(12)).pack(side="left")
+            ent = ctk.CTkEntry(fr, font=F(12), width=width)
+            ent.insert(0, str(cfg.get(key, "")))
+            ent.pack(side="left")
+            fields[key] = ent
+
+        ctk.CTkLabel(d, text="指定监控链接(每行一个, 留空=自动取当前货源)",
+                     anchor="w", font=F(11), text_color=UI_MUTED).pack(anchor="w", padx=16, pady=(10, 2))
+        urls_tb = ctk.CTkTextbox(d, height=110, font=F(11))
+        urls_tb.pack(fill="x", padx=16, pady=(0, 6))
+        urls_tb.insert("0.0", "\n".join(cfg.get("urls") or []))
+
+        btn_row = ctk.CTkFrame(d, fg_color="transparent")
+        btn_row.pack(fill="x", padx=16, pady=10)
+
+        def _collect_cfg():
+            for k, ent in fields.items():
+                try:
+                    cfg[k] = int(float(ent.get())) if k in ("interval_min", "low_stock", "max_items") \
+                        else float(ent.get())
+                except Exception:
+                    pass
+            cfg["urls"] = [u.strip() for u in urls_tb.get("0.0", "end").splitlines() if u.strip()]
+            return cfg
+
+        def _start():
+            c = _collect_cfg()
+            c["enabled"] = True
+            monitor_mod.save_config(c)
+            if not self.monitor.running:
+                self.monitor.start(c)
+            state_lab.configure(text="监控状态: 运行中", text_color="#1f9d55")
+            self._monitor_status.configure(text="运行中", text_color="#1f9d55")
+            self._set_status("定时监控已启动(首次检查在后台立即执行)")
+            d.destroy()
+
+        def _stop():
+            self.monitor.stop()
+            c = _collect_cfg()
+            c["enabled"] = False
+            monitor_mod.save_config(c)
+            state_lab.configure(text="监控状态: 已停止", text_color="#999")
+            self._monitor_status.configure(text="未启用", text_color=UI_MUTED)
+            self._set_status("定时监控已停止")
+
+        def _once():
+            self._set_status("立即执行一次监控检查(后台)...")
+            def worker():
+                rep = monitor_mod.check_once(self.products, _collect_cfg(), self._emit)
+                self._emit("monitor_info", f"检查完成: {rep['time']} 异常 {len(rep['alerts'])} 个")
+            threading.Thread(target=worker, daemon=True).start()
+            d.destroy()
+
+        self._btn(btn_row, "▶ 启动", _start, "green", 96)
+        self._btn(btn_row, "⏹ 停止", _stop, "red", 96)
+        self._btn(btn_row, "🔍 立即检查一次", _once, "blue", 130)
+        self._btn(btn_row, "关闭", d.destroy, "ghost", 80)
+
+        if cfg.get("enabled") and not self.monitor.running:
+            self.monitor.start(cfg)
+            self._monitor_status.configure(text="运行中", text_color="#1f9d55")
+
+    # ---------- Tab 广告投产 ----------
+    def _tab_ad(self):
+        f = self.tabs.tab("广告投产")
+        top = self._section(f, "① 导入推广报表", "拼多多后台 → 推广 → 报表导出 CSV", "purple")
+        self._btn(top, "导入推广CSV", self._load_ad_csv, "purple", 130)
+        self._btn(top, "刷新分析", self._render_ad, "ghost", 100)
+        self._btn(top, "问 AI 分析", lambda: self._ai_quick("分析一下广告投产数据"), "blue", 110)
+        self.ad_rows = []
+        self.ad_csv_path = ""
+
+        self._section_label(f, "② 整体投产概览", "花费 → 成交额 → ROI", "green")
+        kpi = ctk.CTkFrame(f, fg_color=UI_CARD, corner_radius=10,
+                           border_width=1, border_color=UI_BORDER)
+        kpi.pack(fill="x", padx=14, pady=(2, 4))
+        self._ad_kpis = {}
+        keys = ["花费", "成交额", "ROI", "点击率%", "转化率%", "点击成本", "成交单"]
+        for i, k in enumerate(keys):
+            kpi.grid_columnconfigure(i, weight=1)
+            cell = ctk.CTkFrame(kpi, fg_color=UI_SOFT, corner_radius=8)
+            cell.grid(row=0, column=i, padx=6, pady=10, sticky="nsew")
+            ctk.CTkLabel(cell, text=k, font=F(11), text_color=UI_MUTED).pack(pady=(9, 0))
+            lab = ctk.CTkLabel(cell, text="—", font=F(16, True), text_color=UI_BLUE)
+            lab.pack(pady=(1, 9))
+            self._ad_kpis[k] = lab
+
+        self._section_label(f, "③ 按计划/商品拆解", "按花费排序, 含诊断建议", "blue")
+        self.t_ad = Table(f, ["计划/商品", "花费", "成交额", "ROI", "点击率%", "转化率%", "点击成本", "建议"],
+                          widths=[150, 78, 88, 60, 70, 70, 76, 300], height=12)
+        self.t_ad.frame.pack(fill="both", expand=True, padx=14, pady=(2, 12))
+
+    def _load_ad_csv(self):
+        p = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+        if not p:
+            return
+        try:
+            self.ad_rows = ad_roi.parse_ad_csv(p)
+            self.ad_csv_path = p
+            self._render_ad()
+            self._set_status(f"推广报表导入 {len(self.ad_rows)} 条"
+                             + (" | 未识别到关键列, 请检查 CSV 格式" if not self.ad_rows else ""))
+        except Exception as e:
+            messagebox.showerror("导入失败", str(e))
+
+    def _render_ad(self):
+        if not getattr(self, "ad_rows", None):
+            return
+        # 用当前定价的目标净利作为 CPC 上限参考(点击成本超过它必亏)
+        max_cpc = None
+        try:
+            cfg = self.config
+            max_cpc = round(cfg.target_net_margin * 0 + 3.0, 2)  # 占位: 用户可在设置里调整
+        except Exception:
+            pass
+        o = ad_roi.overall(self.ad_rows, max_cpc)
+        for k, v in (("花费", f"¥{o.spend:.2f}"), ("成交额", f"¥{o.gmv:.2f}"),
+                     ("ROI", o.roi), ("点击率%", o.ctr), ("转化率%", o.cvr),
+                     ("点击成本", f"¥{o.cpc}"), ("成交单", int(o.orders))):
+            self._ad_kpis[k].configure(text=str(v))
+        self.t_ad.clear()
+        for s in ad_roi.aggregate(self.ad_rows, "campaign", max_cpc):
+            self.t_ad.add([s.name[:22], f"¥{s.spend:.2f}", f"¥{s.gmv:.2f}",
+                           s.roi, s.ctr, s.cvr, f"¥{s.cpc}", s.advice],
+                          tag=("alt" if s.roi < 1 else ""))
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):
@@ -2428,6 +2602,20 @@ class Workbench(ctk.CTk):
             urls = result.get("collect_urls")
             if urls:
                 self._open_collector(prefill="\n".join(urls))
+        elif kind == "monitor_alert":
+            rep = payload or {}
+            alerts = rep.get("alerts") or []
+            lines = [f"⚠ 监控发现 {len(alerts)} 个异常 ({rep.get('time','')}):"]
+            for a in alerts[:6]:
+                lines.append(f"  • [{a.get('type','')}] {a.get('title','')[:24]} — {a.get('detail','')}")
+            if len(alerts) > 6:
+                lines.append(f"  ... 另有 {len(alerts)-6} 个")
+            lines.append("详见 data/monitor_report.html")
+            self._ai_append("⏰ 监控:", "\n".join(lines))
+            self._set_status(f"⚠ 监控告警 {len(alerts)} 个, 详见 AI 助手页")
+        elif kind == "monitor_info":
+            self._ai_append("⏰ 监控:", str(payload))
+            self._set_status(str(payload))
         elif kind == "err":
             if isinstance(payload, str) and payload.startswith("推流词"):
                 self._update_title_progress("err:" + payload)
@@ -2584,6 +2772,11 @@ class Workbench(ctk.CTk):
 
     def _on_close(self):
         self._save_config()
+        try:
+            if hasattr(self, "monitor"):
+                self.monitor.stop()
+        except Exception:
+            pass
         self.destroy()
 
     # ===== 1688 链接采集器对话框 =====

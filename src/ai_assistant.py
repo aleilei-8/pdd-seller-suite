@@ -62,8 +62,10 @@ SYSTEM_PROMPT = """你是「拼多多全链路工作台」的 AI 助手, 负责�
 3. orders_summary  店铺订单/经营分析
 4. stock_report  库存预警
 5. collect  采集1688商品。params: urls(数组, 从消息里抽取 detail.1688.com/offer/<数字> 链接或8位以上纯数字商品ID)
-6. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
-7. help  问你能做什么
+6. ad_report  广告投产分析(需已导入推广报表)
+7. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
+8. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
+9. help  问你能做什么
 
 规则: 只输出 JSON, 不要输出其他任何文字。数字字段输出为数字而非字符串。"""
 
@@ -115,7 +117,7 @@ def llm_parse(text: str, cfg: dict):
     j = _extract_json(out or "")
     if not j or j.get("action") not in (
             "price_calc", "select_report", "orders_summary",
-            "stock_report", "collect", "chat", "help"):
+            "stock_report", "collect", "ad_report", "review", "chat", "help"):
         return None
     j.setdefault("params", {})
     j.setdefault("reply", "")
@@ -186,6 +188,10 @@ def rule_parse(text: str):
         return {"action": "orders_summary", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("库存", "缺货", "积压", "断货")):
         return {"action": "stock_report", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("广告", "投产", "ROI", "roi", "推广", "点击成本", "投产比")):
+        return {"action": "ad_report", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("点评", "AI建议", "给建议", " Analyze")):
+        return {"action": "review", "params": {}, "reply": "", "source": "rule"}
     if any(k in low for k in ("help", "帮助", "你能做什么", "怎么用", "功能")):
         return {"action": "help", "params": {}, "reply": "", "source": "rule"}
 
@@ -275,6 +281,7 @@ def _do_select_report(p: dict, ctx: dict) -> str:
             lines.append(f"    ⚠ {note}")
     if len(rows) > top_n:
         lines.append(f"(其余 {len(rows)-top_n} 个分数较低, 已省略)")
+    lines.append("\n💬 想让 AI 逐条点评? 输入「点评这几个商品」(需配置模型, 未配置则用本地规则)")
     return "\n".join(lines)
 
 
@@ -339,13 +346,72 @@ def _do_collect(p: dict, ctx: dict) -> dict:
             "collect_urls": urls}
 
 
+def _do_review(p: dict, ctx: dict) -> dict:
+    """LLM 批量点评商品: 一次请求点评 Top N, 控制 token; 未配模型优雅降级。"""
+    import selector
+    cfg = load_config()
+    products = ctx["products"]
+    if not products:
+        return {"reply": "还没有货源数据。先采集 1688 商品后, 我才能点评。"}
+    if not cfg.get("api_key"):
+        # 无模型: 用本地评分理由给出结构化点评(离线降级)
+        rows = selector.score_all(products, ctx["config"])
+        rows.sort(key=lambda r: r.get("total", 0), reverse=True)
+        top_n = int(p.get("top_n") or 5)
+        lines = [f"📝 选品点评(本地规则版, 配置模型可获 AI 建议):"]
+        for r in rows[:top_n]:
+            notes = "；".join((r.get("notes") or [])[:2]) or "无明显风险信号"
+            lines.append(f"• {r['title'][:26]} [{r['grade']}] 净利{_money(r['net_profit'])} "
+                         f"— {notes}")
+        return {"reply": "\n".join(lines)}
+
+    # 有模型: 一次请求批量点评
+    rows = selector.score_all(products, ctx["config"])
+    rows.sort(key=lambda r: r.get("total", 0), reverse=True)
+    top_n = min(int(p.get("top_n") or 5), 10)
+    picked = rows[:top_n]
+    items = [{
+        "序号": i + 1,
+        "标题": r["title"][:50],
+        "等级": r["grade"],
+        "进货": r["cost"],
+        "建议售价": r["suggest_price"],
+        "净利": r["net_profit"],
+        "评分理由": (r.get("notes") or [])[:2],
+    } for i, r in enumerate(picked)]
+
+    sys_prompt = (
+        "你是资深拼多多电商买手。针对每个商品给一句一针见血的中文点评(≤40字), "
+        "聚焦: 值不值得上、最大风险、可执行动作。\n"
+        '只输出 JSON: {"reviews":[{"序号":1,"点评":"..."}]}, 不要其他文字。'
+    )
+    out = llm_chat([
+        {"role": "system", "content": sys_prompt},
+        {"role": "user", "content": json.dumps(items, ensure_ascii=False)},
+    ], cfg, timeout=60)
+    j = _extract_json(out or "")
+    reviews = (j or {}).get("reviews") or []
+    if not reviews:
+        return {"reply": "AI 点评失败(模型返回格式异常), 已为你保留本地评分报告。"}
+    by_no = {int(r.get("序号") or 0): r.get("点评", "") for r in reviews
+             if str(r.get("序号", "")).isdigit()}
+    lines = ["📝 AI 选品点评:"]
+    for i, r in enumerate(picked, 1):
+        lines.append(f"{i}. {r['title'][:26]} [{r['grade']}]\n"
+                     f"   {by_no.get(i, '（无点评）')}")
+    return {"reply": "\n".join(lines)}
+
+
 HELP_TEXT = """🤖 我能帮你做这些(直接说人话就行):
 
 💰 定价测算   「进货8运费2想每件赚3块」「进价23 运费5 净利率8%」
 🌟 选品报告   「哪些商品值得上架」「给个选品评分」
 📊 经营分析   「分析一下订单」「店铺赚了多少钱」
 📦 库存预警   「检查库存」「有没有缺货风险」
+📣 广告投产   「分析广告投产」(先在广告投产页导入推广CSV)
+📝 商品点评   「点评这几个商品」(配置模型给 AI 建议, 没有则用本地规则)
 🔗 采集预填   直接粘贴 1688 链接, 我帮你填进采集窗口
+⏰ 定时监控   点上方「定时监控」设置无人值守(价格/库存异常才提醒)
 💬 自由咨询   配置了模型 API 后, 电商问题也可以直接问我
 
 ⚙️ 点上方「模型设置」可接入 DeepSeek 等 OpenAI 兼容接口;
@@ -372,6 +438,14 @@ def run_action(intent: dict, ctx: dict):
             return {"reply": _do_stock_report(params, ctx)}
         if action == "collect":
             return _do_collect(params, ctx)
+        if action == "ad_report":
+            rows = ctx.get("ad_rows") or []
+            if not rows:
+                return {"reply": "还没有广告数据。请先在「AI 中心 → 广告投产」页导入推广报表 CSV。"}
+            import ad_roi
+            return {"reply": ad_roi.render_report(rows)}
+        if action == "review":
+            return _do_review(params, ctx)
     except Exception as e:
         return {"reply": f"执行出错: {e}\n请换个说法重试, 或直接用对应功能页操作。"}
     # chat / help
