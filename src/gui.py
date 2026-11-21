@@ -43,6 +43,7 @@ import orders as orders_mod
 import analysis
 import shipping as shipping_mod
 import invoice as invoice_mod
+import ai_assistant
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -212,6 +213,9 @@ class _TabHost:
     UI_STATE = ROOT / "ui_state.json"   # 便携包下 ROOT = exe 目录, 保证可写
 
     GROUPS = [
+        ("AI 中心", [
+            ("AI 助手", "🤖"),
+        ]),
         ("运营分析", [
             ("选品评分", "🌟"),
             ("标题优化", "✏️"),
@@ -454,6 +458,7 @@ class Workbench(ctk.CTk):
         # 用侧栏式容器替换顶部横向 Tabview: 左侧分组图标导航 + 右侧堆叠内容区。
         # _TabHost.tab(name) 与原 CTkTabview.tab(name) 行为一致, 既有 _tab_* 无需改动。
         self.tabs = _TabHost(self)
+        self._tab_ai()
         self._tab_select()
         self._tab_title()
         self._tab_price()
@@ -462,6 +467,100 @@ class Workbench(ctk.CTk):
         self._tab_delist()
         self._tab_ship()
         self._tab_invoice()
+
+    # ---------- Tab AI 助手 ----------
+    def _tab_ai(self):
+        f = self.tabs.tab("AI 助手")
+        top = self._section(f, "AI 员工 · 自然语言调度",
+                            "一句话调用: 定价测算 / 选品报告 / 经营分析 / 库存预警 / 采集预填", "purple")
+        self._btn(top, "💰 算保本价", lambda: self._ai_quick("帮我算保本价: 进货8 运费2 想每件赚3块"), "blue", 108)
+        self._btn(top, "🌟 选品报告", lambda: self._ai_quick("给我一份选品评分报告"), "purple", 108)
+        self._btn(top, "📊 经营分析", lambda: self._ai_quick("分析一下店铺订单数据"), "green", 108)
+        self._btn(top, "📦 库存预警", lambda: self._ai_quick("检查库存, 列出预警商品"), "orange", 108)
+        self._btn(top, "⚙️ 模型设置", self._ai_settings, "ghost", 104)
+
+        self._ai_log = ctk.CTkTextbox(f, font=F(12), wrap="word")
+        self._ai_log.pack(fill="both", expand=True, padx=14, pady=(4, 6))
+        self._ai_log.insert("end", ai_assistant.WELCOME)
+        self._ai_log.configure(state="disabled")
+
+        row = ctk.CTkFrame(f, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(0, 12))
+        self._ai_entry = ctk.CTkEntry(
+            row, placeholder_text="输入指令, 如: 进货8运费2想每件赚3块 ／ 直接粘贴1688链接",
+            font=F(13), height=40)
+        self._ai_entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._ai_entry.bind("<Return>", lambda _e: self._ai_send())
+        self._ai_send_btn = self._btn(row, "发送 ▶", self._ai_send, "blue", 100)
+        self._ai_running = False
+
+    def _ai_append(self, who, text):
+        self._ai_log.configure(state="normal")
+        self._ai_log.insert("end", f"\n{who} {text}\n")
+        self._ai_log.see("end")
+        self._ai_log.configure(state="disabled")
+
+    def _ai_quick(self, text):
+        self._ai_entry.delete(0, "end")
+        self._ai_entry.insert(0, text)
+        self._ai_send()
+
+    def _ai_send(self):
+        text = self._ai_entry.get().strip()
+        if not text or self._ai_running:
+            return
+        self._ai_entry.delete(0, "end")
+        self._ai_append("🧑 你:", text)
+        self._ai_running = True
+        self._ai_send_btn.configure(state="disabled", text="思考中…")
+
+        def worker():
+            try:
+                intent = ai_assistant.parse(text)
+                intent["_text"] = text
+                result = ai_assistant.run_action(intent, {
+                    "products": self.products,
+                    "config": self.config,
+                    "orders": self.orders,
+                })
+            except Exception as e:
+                result = {"reply": f"出错了: {e}"}
+            self._emit("ai_reply", result)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ai_settings(self):
+        cfg = ai_assistant.load_config()
+        d = ctk.CTkToplevel(self)
+        d.title("AI 模型设置 (OpenAI 兼容)")
+        d.geometry("540x340")
+        d.transient(self)
+        try:
+            d.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(d, text="接入 DeepSeek / 通义 / Kimi 等 OpenAI 兼容接口后, 可自由问答。\n"
+                             "不配置则使用本地规则解析, 核心功能(定价/选品/分析/库存)不受影响。",
+                     justify="left", font=F(11)).pack(anchor="w", padx=16, pady=(14, 6))
+        rows = {}
+        for key, label in (("api_base", "API 地址"), ("model", "模型名"), ("api_key", "API Key")):
+            fr = ctk.CTkFrame(d, fg_color="transparent")
+            fr.pack(fill="x", padx=16, pady=6)
+            ctk.CTkLabel(fr, text=label, width=76, anchor="w", font=F(12)).pack(side="left")
+            ent = ctk.CTkEntry(fr, font=F(12), width=340)
+            ent.insert(0, str(cfg.get(key) or ""))
+            ent.pack(side="left", fill="x", expand=True)
+            rows[key] = ent
+
+        def _save():
+            for k, ent in rows.items():
+                cfg[k] = ent.get().strip()
+            ai_assistant.save_config(cfg)
+            d.destroy()
+            self._set_status("AI 模型配置已保存"
+                             + ("(已接入)" if cfg.get("api_key") else "(未配置, 使用本地规则)"))
+
+        self._btn(d, "保存", _save, "green", 110)
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):
@@ -2317,6 +2416,18 @@ class Workbench(ctk.CTk):
             else:
                 self._set_status("⚠ 扫描到 0 个商品: 可能后台改版或仍停留在登录/验证页。"
                                  " 请查看 data/debug_store.html 并反馈给我校准选择器")
+        elif kind == "ai_reply":
+            # AI 助手回复(后台线程算完 → 主线程渲染; 采集预填需在主线程开窗)
+            result = payload or {}
+            self._ai_append("🤖 助手:", result.get("reply") or "(无回复)")
+            self._ai_running = False
+            try:
+                self._ai_send_btn.configure(state="normal", text="发送 ▶")
+            except Exception:
+                pass
+            urls = result.get("collect_urls")
+            if urls:
+                self._open_collector(prefill="\n".join(urls))
         elif kind == "err":
             if isinstance(payload, str) and payload.startswith("推流词"):
                 self._update_title_progress("err:" + payload)
@@ -2476,7 +2587,7 @@ class Workbench(ctk.CTk):
         self.destroy()
 
     # ===== 1688 链接采集器对话框 =====
-    def _open_collector(self, auto_listing=False):
+    def _open_collector(self, auto_listing=False, prefill=""):
         """采集 1688 商品链接(自采数据, 可直接用于上架)。
 
         在线抓取用 Playwright(需 playwright install chromium); 也支持解析本地保存的 HTML。
@@ -2876,6 +2987,17 @@ class Workbench(ctk.CTk):
 
         def do_login():
             threading.Thread(target=worker_login, daemon=True).start()
+
+        # AI 助手预填: 外部(如 AI 助手)识别出的链接清单直接进列表, 仍需人工点『开始采集』
+        if prefill:
+            added = 0
+            for u in _find_links(prefill):
+                if u not in urls:
+                    urls.append(u)
+                    added += 1
+            if added:
+                _render()
+                dq.put(f"AI 助手已预填 {added} 个链接, 确认后点『开始采集(在线)』")
 
 
 if __name__ == "__main__":
