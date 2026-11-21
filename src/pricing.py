@@ -125,6 +125,7 @@ class PricingConfig:
     payment_fee_rate: float = PAYMENT_FEE_RATE
     shipping: ShippingTemplate = field(default_factory=ShippingTemplate)
     target_net_margin: float = 0.25     # 建议售价的目标净利率
+    max_cpc: float = 3.0                # 广告点击成本上限(元), 超过单件净利即必亏, 供广告诊断用
     default_other_fee: float = 0.0      # 默认每件其他费用(包装等)
     markup_fallback: float = 2.8        # 无目标利润率时的兜底加价倍率(仅展示)
 
@@ -133,6 +134,7 @@ class PricingConfig:
                 "payment_fee_rate": self.payment_fee_rate,
                 "shipping": self.shipping.to_dict(),
                 "target_net_margin": self.target_net_margin,
+                "max_cpc": self.max_cpc,
                 "default_other_fee": self.default_other_fee,
                 "markup_fallback": self.markup_fallback}
 

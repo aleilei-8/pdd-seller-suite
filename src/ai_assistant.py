@@ -63,9 +63,10 @@ SYSTEM_PROMPT = """你是「拼多多全链路工作台」的 AI 助手, 负责�
 4. stock_report  库存预警
 5. collect  采集1688商品。params: urls(数组, 从消息里抽取 detail.1688.com/offer/<数字> 链接或8位以上纯数字商品ID)
 6. ad_report  广告投产分析(需已导入推广报表)
-7. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
-8. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
-9. help  问你能做什么
+7. finance_report  全成本利润对账(把广告费扣进净利, 算真实净利; 需已导入订单CSV和推广报表)
+8. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
+9. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
+10. help  问你能做什么
 
 规则: 只输出 JSON, 不要输出其他任何文字。数字字段输出为数字而非字符串。"""
 
@@ -117,7 +118,8 @@ def llm_parse(text: str, cfg: dict):
     j = _extract_json(out or "")
     if not j or j.get("action") not in (
             "price_calc", "select_report", "orders_summary",
-            "stock_report", "collect", "ad_report", "review", "chat", "help"):
+            "stock_report", "collect", "ad_report", "finance_report",
+            "review", "chat", "help"):
         return None
     j.setdefault("params", {})
     j.setdefault("reply", "")
@@ -188,6 +190,8 @@ def rule_parse(text: str):
         return {"action": "orders_summary", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("库存", "缺货", "积压", "断货")):
         return {"action": "stock_report", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("对账", "真实利润", "真实净利", "广告后", "扣掉广告", "广告费扣", "全成本")):
+        return {"action": "finance_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("广告", "投产", "ROI", "roi", "推广", "点击成本", "投产比")):
         return {"action": "ad_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("点评", "AI建议", "给建议", " Analyze")):
@@ -409,6 +413,7 @@ HELP_TEXT = """🤖 我能帮你做这些(直接说人话就行):
 📊 经营分析   「分析一下订单」「店铺赚了多少钱」
 📦 库存预警   「检查库存」「有没有缺货风险」
 📣 广告投产   「分析广告投产」(先在广告投产页导入推广CSV)
+📒 财务对账   「算一下扣掉广告费后的真实利润」(订单CSV+推广CSV, 在财务对账页刷新)
 📝 商品点评   「点评这几个商品」(配置模型给 AI 建议, 没有则用本地规则)
 🔗 采集预填   直接粘贴 1688 链接, 我帮你填进采集窗口
 ⏰ 定时监控   点上方「定时监控」设置无人值守(价格/库存异常才提醒)
@@ -443,7 +448,19 @@ def run_action(intent: dict, ctx: dict):
             if not rows:
                 return {"reply": "还没有广告数据。请先在「AI 中心 → 广告投产」页导入推广报表 CSV。"}
             import ad_roi
-            return {"reply": ad_roi.render_report(rows)}
+            max_cpc = None
+            try:
+                max_cpc = float(ctx.get("config").max_cpc)
+            except Exception:
+                pass
+            return {"reply": ad_roi.render_report(rows, max_cpc)}
+        if action == "finance_report":
+            res = ctx.get("finance_result")
+            if not res:
+                return {"reply": "还没有对账数据。请先在「财务对账」页导入订单 CSV（店铺分析页导入后会自动关联成本），"
+                                 "再在「广告投产」页导入推广报表 CSV，然后点「刷新对账」。"}
+            import finance
+            return {"reply": finance.render_report(res)}
         if action == "review":
             return _do_review(params, ctx)
     except Exception as e:

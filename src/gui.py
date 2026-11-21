@@ -46,6 +46,7 @@ import invoice as invoice_mod
 import ai_assistant
 import monitor as monitor_mod
 import ad_roi
+import finance as finance_mod
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -218,6 +219,7 @@ class _TabHost:
         ("AI 中心", [
             ("AI 助手", "🤖"),
             ("广告投产", "📣"),
+            ("财务对账", "📒"),
         ]),
         ("运营分析", [
             ("选品评分", "🌟"),
@@ -424,6 +426,7 @@ class Workbench(ctk.CTk):
         ctk.CTkLabel(card, text="全局定价参数", font=F(12, True),
                      text_color=UI_TEXT).pack(side="left", padx=(16, 8))
         self._mk_entry(card, "目标净利率%", str(int(self.config.target_net_margin * 100)), 8, self._on_cfg)
+        self._mk_entry(card, "点击成本上限¥", str(self.config.max_cpc), 8, self._on_cfg)
         self._mk_entry(card, "平台佣金率%", str(self.config.commission_rate * 100), 8, self._on_cfg)
         self._mk_entry(card, "支付费率%", str(self.config.payment_fee_rate * 100), 8, self._on_cfg)
         ctk.CTkFrame(card, width=1, height=38, fg_color=UI_BORDER).pack(side="left", padx=12)
@@ -448,6 +451,7 @@ class Workbench(ctk.CTk):
     def _on_cfg(self, ev=None):
         try:
             self.config.target_net_margin = float(self._cfg_val("目标净利率%")) / 100
+            self.config.max_cpc = float(self._cfg_val("点击成本上限¥"))
             self.config.commission_rate = float(self._cfg_val("平台佣金率%")) / 100
             self.config.payment_fee_rate = float(self._cfg_val("支付费率%")) / 100
         except ValueError:
@@ -463,6 +467,7 @@ class Workbench(ctk.CTk):
         self.tabs = _TabHost(self)
         self._tab_ai()
         self._tab_ad()
+        self._tab_finance()
         self._tab_select()
         self._tab_title()
         self._tab_price()
@@ -536,6 +541,7 @@ class Workbench(ctk.CTk):
                     "config": self.config,
                     "orders": self.orders,
                     "ad_rows": getattr(self, "ad_rows", []),
+                    "finance_result": getattr(self, "fin_result", None),
                 })
             except Exception as e:
                 result = {"reply": f"出错了: {e}"}
@@ -718,11 +724,10 @@ class Workbench(ctk.CTk):
     def _render_ad(self):
         if not getattr(self, "ad_rows", None):
             return
-        # 用当前定价的目标净利作为 CPC 上限参考(点击成本超过它必亏)
+        # 点击成本上限来自全局定价参数(可在顶部卡片或设置对话框调整), 超过它意味着点击越多亏越多
         max_cpc = None
         try:
-            cfg = self.config
-            max_cpc = round(cfg.target_net_margin * 0 + 3.0, 2)  # 占位: 用户可在设置里调整
+            max_cpc = float(self.config.max_cpc)
         except Exception:
             pass
         o = ad_roi.overall(self.ad_rows, max_cpc)
@@ -735,6 +740,79 @@ class Workbench(ctk.CTk):
             self.t_ad.add([s.name[:22], f"¥{s.spend:.2f}", f"¥{s.gmv:.2f}",
                            s.roi, s.ctr, s.cvr, f"¥{s.cpc}", s.advice],
                           tag=("alt" if s.roi < 1 else ""))
+
+    # ---------- Tab 财务对账 ----------
+    def _tab_finance(self):
+        f = self.tabs.tab("财务对账")
+        top = self._section(f, "① 导入数据", "订单CSV(店铺分析页导入后自动关联成本) + 推广CSV(广告投产页导入)", "purple")
+        self._btn(top, "导入订单CSV", self._load_finance_orders, "purple", 130)
+        self._btn(top, "刷新对账", self._render_finance, "ghost", 100)
+        self._btn(top, "问 AI 对账", lambda: self._ai_quick("算一下广告费扣掉后的真实利润"), "blue", 120)
+        self._fin_dim = ctk.StringVar(value="商品")
+        ctk.CTkComboBox(top, values=["商品", "日期", "计划", "整体"],
+                        variable=self._fin_dim, width=100,
+                        command=lambda _: self._render_finance()).pack(side="left", padx=8)
+
+        self._section_label(f, "② 全成本概览", "净利已扣进货/运费/佣金/手续费/广告费", "green")
+        kpi = ctk.CTkFrame(f, fg_color=UI_CARD, corner_radius=10,
+                           border_width=1, border_color=UI_BORDER)
+        kpi.pack(fill="x", padx=14, pady=(2, 4))
+        self._fin_kpis = {}
+        keys = ["成交额", "广告费", "广告前净利", "广告后净利", "真实净利率"]
+        for i, k in enumerate(keys):
+            kpi.grid_columnconfigure(i, weight=1)
+            cell = ctk.CTkFrame(kpi, fg_color=UI_SOFT, corner_radius=8)
+            cell.grid(row=0, column=i, padx=6, pady=10, sticky="nsew")
+            ctk.CTkLabel(cell, text=k, font=F(11), text_color=UI_MUTED).pack(pady=(9, 0))
+            lab = ctk.CTkLabel(cell, text="—", font=F(16, True), text_color=UI_BLUE)
+            lab.pack(pady=(1, 9))
+            self._fin_kpis[k] = lab
+
+        self._section_label(f, "③ 逐项拆解", "广告前净利 → 扣广告费 → 广告后真实净利", "blue")
+        self.t_fin = Table(f, ["商品/计划", "订单", "成交额", "广告费", "广告前净利", "广告后净利", "真实净利率", "诊断"],
+                           widths=[130, 50, 82, 78, 92, 92, 80, 280], height=12)
+        self.t_fin.frame.pack(fill="both", expand=True, padx=14, pady=(2, 12))
+        self.fin_result = None
+
+    def _load_finance_orders(self):
+        p = filedialog.askopenfilename(filetypes=[("CSV", "*.csv")])
+        if not p:
+            return
+        try:
+            self.orders = orders_mod.parse_orders(p)
+            cost_map = (orders_mod.load_cost_map(self.cost_map_path)
+                        if getattr(self, "cost_map_path", "") else None)
+            self.orders = orders_mod.enrich_orders(self.orders, self.products, self.config, cost_map)
+            self._render_finance()
+            self._set_status(f"订单导入 {len(self.orders)} 条(已关联成本) | 点「刷新对账」合并广告数据")
+        except Exception as e:
+            messagebox.showerror("导入失败", str(e))
+
+    def _render_finance(self):
+        orders = getattr(self, "orders", None) or []
+        ads = getattr(self, "ad_rows", None) or []
+        if not orders and not ads:
+            return
+        dim = {"商品": "goods", "日期": "date", "计划": "campaign", "整体": "all"}.get(
+            self._fin_dim.get() if getattr(self, "_fin_dim", None) else "商品", "goods")
+        try:
+            target = float(self.config.target_net_margin)
+        except Exception:
+            target = 0.0
+        res = finance_mod.reconcile(orders, ads, dim, target)
+        self.fin_result = res
+        ov = res["overall"]
+        for k, v in (("成交额", f"¥{ov.revenue:.2f}"), ("广告费", f"¥{ov.ad_spend:.2f}"),
+                     ("广告前净利", f"¥{ov.net_before:.2f}"),
+                     ("广告后净利", f"¥{ov.net_after:.2f}"),
+                     ("真实净利率", f"{ov.margin_after}%")):
+            self._fin_kpis[k].configure(text=str(v))
+        self.t_fin.clear()
+        for r in res["rows"]:
+            self.t_fin.add([r.name[:20], str(r.orders), f"¥{r.revenue:.2f}",
+                            f"¥{r.ad_spend:.2f}", f"¥{r.net_before:.2f}",
+                            f"¥{r.net_after:.2f}", f"{r.margin_after}%", r.advice],
+                           tag=("alt" if r.net_after < 0 else ""))
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):
@@ -2701,6 +2779,7 @@ class Workbench(ctk.CTk):
         mk("默认佣金率%", round(self.config.commission_rate * 100, 2), "commission_rate")
         mk("支付费率%", round(self.config.payment_fee_rate * 100, 2), "payment_fee_rate")
         mk("目标净利率%", int(self.config.target_net_margin * 100), "target_net_margin")
+        mk("点击成本上限¥", self.config.max_cpc, "max_cpc")
         mk("默认其他费(包装)¥", self.config.default_other_fee, "default_other_fee")
 
         prev = ctk.CTkLabel(s, text="", text_color="#1f9d55", justify="left")
@@ -2754,6 +2833,7 @@ class Workbench(ctk.CTk):
                 self.config.commission_rate = d["commission_rate"] / 100
                 self.config.payment_fee_rate = d["payment_fee_rate"] / 100
                 self.config.target_net_margin = d["target_net_margin"] / 100
+                self.config.max_cpc = d["max_cpc"]
                 self.config.default_other_fee = d["default_other_fee"]
                 self._save_config()
                 if self.products:

@@ -13,6 +13,7 @@
     "remote_add_fee": 6.0
   },
   "target_net_margin": 0.25,
+  "max_cpc": 3.0,
   "default_other_fee": 0.0,
   "markup_fallback": 2.8
 }
