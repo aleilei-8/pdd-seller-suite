@@ -48,6 +48,14 @@ import monitor as monitor_mod
 import ad_roi
 import finance as finance_mod
 import competitor as competitor_mod
+# 客服折中方案(只读, 合规护栏): 惰性业务模块, import 轻量, 启动无副作用
+import compliance as compliance_mod
+import cs_scripts as cs_scripts_mod
+import cs_qa as cs_qa_mod
+import cs_aftersales as cs_aftersales_mod
+import cs_sla as cs_sla_mod
+import daily_brief as daily_brief_mod
+import listing_audit as listing_audit_mod
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -222,6 +230,11 @@ class _TabHost:
             ("广告投产", "📣"),
             ("财务对账", "📒"),
             ("竞品监控", "🎯"),
+            ("客服助手", "💬"),
+        ]),
+        ("智能编排", [
+            ("全店早报", "📰"),
+            ("文案体检", "🛡"),
         ]),
         ("运营分析", [
             ("选品评分", "🌟"),
@@ -382,6 +395,11 @@ class Workbench(ctk.CTk):
         self.cost_map_path = ""
         self.selected_item = None
         self._price_province = "非偏远(默认)"
+        # 客服助手缓存(只读分析用; 数据均来自用户手动导入的 CSV, 不入库)
+        self.cs_chat_rows = []      # list[cs_qa.ChatRow]
+        self.cs_after_rows = []     # list[cs_aftersales.AfterSaleRow]
+        self.cs_chat_path = ""
+        self.cs_after_path = ""
 
         self._q = queue.Queue()
         self.busy = False
@@ -471,6 +489,9 @@ class Workbench(ctk.CTk):
         self._tab_ad()
         self._tab_finance()
         self._tab_competitor()
+        self._tab_cs()
+        self._tab_brief()
+        self._tab_audit()
         self._tab_select()
         self._tab_title()
         self._tab_price()
@@ -548,6 +569,8 @@ class Workbench(ctk.CTk):
                     "ad_rows": getattr(self, "ad_rows", []),
                     "finance_result": getattr(self, "fin_result", None),
                     "competitor_result": getattr(self, "comp_result", None),
+                    "cs_chat_rows": getattr(self, "cs_chat_rows", []),
+                    "cs_after_rows": getattr(self, "cs_after_rows", []),
                 })
             except Exception as e:
                 result = {"reply": f"出错了: {e}"}
@@ -1000,6 +1023,321 @@ class Workbench(ctk.CTk):
             self.competitor.start(cfg)
             self._comp_status.configure(text="定时复查: 运行中", text_color="#1f9d55")
             self._set_status("竞品定时复查已启动(每120分钟, 异常才提醒)")
+
+    # ===== Tab 客服助手 (折中方案: 只读建议 + 合规护栏, 绝不自动发送) =====
+    def _tab_cs(self):
+        f = self.tabs.tab("客服助手")
+        self._hint(f, "🛡 合规声明: 本页所有功能只生成『建议』或『统计』,"
+                      "不登录店铺、不自动回复、不点同意/拒绝任何售后单。"
+                      "买家信息在送模型前已脱敏, 请人工确认后复制使用。", "danger")
+
+        # 用子 Tabview 承载 4 个面板
+        tv = ctk.CTkTabview(f, corner_radius=12, fg_color=UI_CARD,
+                            segmented_button_fg_color="#eef3fb",
+                            segmented_button_selected_color=UI_BLUE,
+                            segmented_button_selected_hover_color=UI_BLUE_D)
+        tv.pack(fill="both", expand=True, padx=14, pady=(6, 14))
+        self.cs_tv = tv
+        t_script = tv.add("① 话术台")
+        t_qa = tv.add("② 客服质检")
+        t_after = tv.add("③ 售后建议")
+        t_sla = tv.add("④ 响应时效")
+
+        self._cs_build_script(t_script)
+        self._cs_build_qa(t_qa)
+        self._cs_build_after(t_after)
+        self._cs_build_sla(t_sla)
+
+    def _cs_build_script(self, parent):
+        top = self._section(parent, "话术台 · 生成建议回复",
+                            "买家问题 → 脱敏 → [可选AI] → 合规护栏 → 人工复制", "purple")
+        self._btn(top, "📚 话术管理", self._cs_manage_faq, "ghost", 120)
+        self._btn(top, "🧹 清空", self._cs_clear_script, "ghost", 90)
+        self._btn(top, "问 AI 助手", lambda: self._ai_quick("帮我写客服话术"), "blue", 110)
+
+        ctk.CTkLabel(parent, text="买家问题(可含手机号/地址, 会自动脱敏):",
+                     font=F(12, True), text_color=UI_TEXT).pack(anchor="w", padx=16, pady=(8, 2))
+        self.cs_q_text = ctk.CTkTextbox(parent, height=90, font=F(12), wrap="word")
+        self.cs_q_text.pack(fill="x", padx=16, pady=(0, 6))
+
+        ctk.CTkLabel(parent, text="商品公开信息(可选, 如规格/活动, 请勿填买家隐私):",
+                     font=F(11), text_color=UI_MUTED).pack(anchor="w", padx=16, pady=(2, 2))
+        self.cs_info_text = ctk.CTkTextbox(parent, height=46, font=F(11), wrap="word")
+        self.cs_info_text.pack(fill="x", padx=16, pady=(0, 6))
+
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=16, pady=(0, 4))
+        self._btn(row, "✨ 生成建议回复", self._cs_generate, "purple", 150)
+        self._btn(row, "📋 复制话术", self._cs_copy_reply, "green", 120)
+
+        self.cs_reply_status = ctk.CTkLabel(parent, text="", font=F(11),
+                                            text_color=UI_MUTED, wraplength=1150, justify="left", anchor="w")
+        self.cs_reply_status.pack(fill="x", padx=16, pady=(2, 2))
+        self.cs_reply_text = ctk.CTkTextbox(parent, font=F(12), wrap="word")
+        self.cs_reply_text.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+    def _cs_build_qa(self, parent):
+        top = self._section(parent, "客服质检 · 聊天记录分析",
+                            "导入 CSV → 脱敏 → 高频问题/情绪/过度承诺", "orange")
+        self._btn(top, "📂 导入聊天 CSV", self._cs_import_chat, "blue", 150)
+        self._btn(top, "🔍 开始质检", self._cs_run_qa, "orange", 120)
+        self._btn(top, "问 AI 分析", lambda: self._ai_quick("客服质检"), "ghost", 110)
+        self.cs_qa_file = ctk.CTkLabel(top, text="未导入", font=F(11), text_color=UI_MUTED)
+        self.cs_qa_file.pack(side="left", padx=8)
+        self.cs_qa_text = ctk.CTkTextbox(parent, font=F(12), wrap="word")
+        self.cs_qa_text.pack(fill="both", expand=True, padx=16, pady=(10, 12))
+
+    def _cs_build_after(self, parent):
+        top = self._section(parent, "售后建议 · 处理决策参考",
+                            "导入退款 CSV → 规则判定 → 同意/协商/拒绝/提交平台(只出建议)", "green")
+        self._btn(top, "📂 导入售后 CSV", self._cs_import_after, "blue", 150)
+        self._btn(top, "🛠 生成建议", self._cs_run_after, "green", 120)
+        self._btn(top, "问 AI 分析", lambda: self._ai_quick("售后建议"), "ghost", 110)
+        self.cs_after_file = ctk.CTkLabel(top, text="未导入", font=F(11), text_color=UI_MUTED)
+        self.cs_after_file.pack(side="left", padx=8)
+        self.cs_after_text = ctk.CTkTextbox(parent, font=F(12), wrap="word")
+        self.cs_after_text.pack(fill="both", expand=True, padx=16, pady=(10, 12))
+
+    def _cs_build_sla(self, parent):
+        top = self._section(parent, "响应时效 · 纯统计看板",
+                            "首响时长/达标率/未回复/咨询高峰(复用已导入的聊天CSV)", "blue")
+        self._btn(top, "📂 导入聊天 CSV", self._cs_import_chat, "blue", 150)
+        self._btn(top, "⏱ 生成看板", self._cs_run_sla, "blue", 120)
+        self._btn(top, "问 AI 分析", lambda: self._ai_quick("客服时效"), "ghost", 110)
+        self.cs_sla_target = ctk.CTkEntry(top, width=70, font=F(11))
+        self.cs_sla_target.insert(0, "5")
+        self.cs_sla_target.pack(side="left", padx=4)
+        ctk.CTkLabel(top, text="首响目标(分钟)", font=F(11), text_color=UI_MUTED).pack(side="left")
+        self.cs_sla_text = ctk.CTkTextbox(parent, font=F(12), wrap="word")
+        self.cs_sla_text.pack(fill="both", expand=True, padx=16, pady=(10, 12))
+
+    # ---- 话术台 actions ----
+    def _cs_clear_script(self):
+        try:
+            self.cs_q_text.delete("1.0", "end")
+            self.cs_info_text.delete("1.0", "end")
+            self.cs_reply_text.delete("1.0", "end")
+            self.cs_reply_status.configure(text="")
+        except Exception:
+            pass
+
+    def _cs_generate(self):
+        q = self.cs_q_text.get("1.0", "end").strip()
+        info = self.cs_info_text.get("1.0", "end").strip()
+        if not q:
+            messagebox.showinfo("提示", "请先输入买家问题")
+            return
+        self.cs_reply_status.configure(text="生成中…")
+        self.cs_reply_text.delete("1.0", "end")
+
+        def worker():
+            try:
+                res = cs_scripts_mod.generate(q, info, use_llm=True)
+                self._emit("cs_script_result", res)
+            except Exception as e:
+                self._emit("cs_script_result", {"reply": "", "summary": f"生成出错: {e}"})
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _cs_copy_reply(self):
+        text = self.cs_reply_text.get("1.0", "end").strip()
+        if not text:
+            messagebox.showinfo("提示", "还没有可复制的话术")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(text)
+        self._set_status("✅ 建议话术已复制, 请人工确认后再发送到拼多多后台")
+
+    def _cs_manage_faq(self):
+        """增删本地标准话术(data/cs_faq.json, 不入库)。"""
+        d = ctk.CTkToplevel(self)
+        d.title("本地话术库管理 (仅本机保存)")
+        d.geometry("720x560")
+        d.transient(self)
+        try:
+            d.grab_set()
+        except Exception:
+            pass
+        ctk.CTkLabel(d, text="每行一个话术: 触发词|回复话术。系统按触发词匹配, 未接入模型时离线可用。",
+                     font=F(11), text_color=UI_MUTED).pack(anchor="w", padx=16, pady=(12, 6))
+        items = cs_scripts_mod.load_faq()
+        lines = [f"{'|'.join(it.get('keys', []))}|{it.get('answer','')}" for it in items]
+        tb = ctk.CTkTextbox(d, font=F(11), wrap="word")
+        tb.pack(fill="both", expand=True, padx=16, pady=6)
+        tb.insert("1.0", "\n".join(lines) if lines
+                  else "什么时候发货|亲, 一般48小时内发出, 请留意物流更新~\n"
+                       "怎么退款|亲, 请在订单页提交售后申请, 我们会尽快处理~")
+
+        def save():
+            parsed = []
+            for line in tb.get("1.0", "end").strip().splitlines():
+                if "|" not in line:
+                    continue
+                parts = line.split("|")
+                keys = [k.strip() for k in parts[:-1] if k.strip()]
+                ans = parts[-1].strip()
+                if keys and ans:
+                    parsed.append({"keys": keys, "answer": ans})
+            if cs_scripts_mod.save_faq(parsed):
+                self._set_status(f"✅ 已保存 {len(parsed)} 条本地话术")
+                d.destroy()
+            else:
+                messagebox.showerror("保存失败", "无法写入 data/cs_faq.json")
+
+        self._btn(d, "保存话术", save, "green", 110)
+        self._btn(d, "取消", d.destroy, "ghost", 80)
+
+    # ---- 通用 CSV 导入 ----
+    def _cs_import_chat(self):
+        p = filedialog.askopenfilename(title="选择客服聊天记录 CSV",
+                                        filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+        if not p:
+            return
+        try:
+            rows, st = cs_qa_mod.parse_chat_csv(p)
+            self.cs_chat_rows = rows
+            self.cs_chat_path = p
+            tip = (f"已导入 {Path(p).name} · {st['total']} 条 "
+                   f"(脱敏 {st['privacy_masked']} 条)")
+            self.cs_qa_file.configure(text=tip)
+            self._set_status("✅ " + tip)
+        except Exception as e:
+            messagebox.showerror("导入失败", f"读取 CSV 出错: {e}\n请确认是 UTF-8 编码的客服聊天记录。")
+
+    def _cs_import_after(self):
+        p = filedialog.askopenfilename(title="选择售后/退款 CSV",
+                                        filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+        if not p:
+            return
+        try:
+            rows = cs_aftersales_mod.parse_aftersales_csv(p)
+            self.cs_after_rows = rows
+            self.cs_after_path = p
+            tip = f"已导入 {Path(p).name} · {len(rows)} 单"
+            self.cs_after_file.configure(text=tip)
+            self._set_status("✅ " + tip)
+        except Exception as e:
+            messagebox.showerror("导入失败", f"读取 CSV 出错: {e}")
+
+    # ---- 质检 / 售后 / 时效 actions ----
+    def _cs_run_qa(self):
+        if not self.cs_chat_rows:
+            messagebox.showinfo("提示", "请先导入客服聊天 CSV")
+            return
+        self.cs_qa_text.delete("1.0", "end")
+        self.cs_qa_text.insert("1.0", "质检中…")
+        def worker():
+            try:
+                res = cs_qa_mod.analyze(self.cs_chat_rows)
+                self._emit("cs_qa_result", cs_qa_mod.render_report(res))
+            except Exception as e:
+                self._emit("cs_qa_result", f"质检出错: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _cs_run_after(self):
+        if not self.cs_after_rows:
+            messagebox.showinfo("提示", "请先导入售后 CSV")
+            return
+        try:
+            res = cs_aftersales_mod.analyze_all(self.cs_after_rows)
+            self.cs_after_text.delete("1.0", "end")
+            self.cs_after_text.insert("1.0", cs_aftersales_mod.render_report(res))
+            self._set_status("✅ 售后建议已生成(仅供决策参考, 不会自动执行)")
+        except Exception as e:
+            messagebox.showerror("生成失败", str(e))
+
+    def _cs_run_sla(self):
+        if not self.cs_chat_rows:
+            messagebox.showinfo("提示", "请先导入客服聊天 CSV")
+            return
+        try:
+            target = float(self.cs_sla_target.get().strip() or 5)
+        except ValueError:
+            target = 5.0
+        try:
+            res = cs_sla_mod.analyze(self.cs_chat_rows, first_reply_target_min=target)
+            self.cs_sla_text.delete("1.0", "end")
+            self.cs_sla_text.insert("1.0", cs_sla_mod.render_report(res))
+            self._set_status("✅ 响应时效看板已生成(纯统计)")
+        except Exception as e:
+            messagebox.showerror("生成失败", str(e))
+
+    # ===== Tab 全店早报 (编排层: 跨模块聚合, 纯只读) =====
+    def _tab_brief(self):
+        f = self.tabs.tab("全店早报")
+        self._hint(f, "📰 一句话汇总全店经营状况(订单/广告/财务/竞品/库存/客服)并列出今日优先待办。"
+                      "只读聚合, 不抓取、不修改任何数据; 数据来自各功能页已导入的内容。", "info")
+        top = self._section(f, "全店经营早报", "老板视角 · 全店体检 + 今日待办", "purple")
+        self._btn(top, "📰 生成早报", self._run_brief, "purple", 130)
+        self._btn(top, "问 AI 助手", lambda: self._ai_quick("今日待办"), "blue", 110)
+        brief_status = ctk.CTkLabel(top, text="数据来自已导入模块; 缺数据的模块会标注『待导入』",
+                                    font=F(11), text_color=UI_MUTED)
+        brief_status.pack(side="left", padx=8)
+        self.brief_text = ctk.CTkTextbox(f, font=F(12), wrap="word")
+        self.brief_text.pack(fill="both", expand=True, padx=16, pady=(10, 14))
+
+    def _run_brief(self):
+        self.brief_text.delete("1.0", "end")
+        self.brief_text.insert("1.0", "正在聚合全店数据…")
+        def worker():
+            try:
+                ctx = {
+                    "products": self.products, "orders": self.orders,
+                    "config": self.config,
+                    "ad_rows": getattr(self, "ad_rows", []),
+                    "finance_result": getattr(self, "fin_result", None),
+                    "competitor_result": getattr(self, "comp_result", None),
+                    "cs_chat_rows": getattr(self, "cs_chat_rows", []),
+                }
+                res = daily_brief_mod.build(ctx)
+                self._emit("brief_result", daily_brief_mod.render_report(res))
+            except Exception as e:
+                self._emit("brief_result", f"生成早报出错: {e}")
+        threading.Thread(target=worker, daemon=True).start()
+
+    # ===== Tab 文案体检 (复用合规护栏, 纯只读扫描) =====
+    def _tab_audit(self):
+        f = self.tabs.tab("文案体检")
+        self._hint(f, "🛡 上架前扫一遍: 广告法极限词 / 虚假承诺 / 平台违禁词, 给出安全替换文案。"
+                      "纯本地规则扫描, 不修改商品; 替换仅供参考, 上架前请人工复核。", "danger")
+        top = self._section(f, "文案体检", "可手动粘贴文案, 或一键扫描全部已采集商品", "orange")
+        self._btn(top, "🔍 扫描已采集商品", self._run_audit_products, "orange", 150)
+        self._btn(top, "📝 体检下方文案", self._run_audit_manual, "blue", 130)
+        self._btn(top, "问 AI 助手", self._audit_ask_ai, "ghost", 110)
+        ctk.CTkLabel(f, text="手动文案(一行一条, 可粘贴标题/卖点/详情):",
+                     font=F(12, True), text_color=UI_TEXT).pack(anchor="w", padx=16, pady=(8, 2))
+        self.audit_input = ctk.CTkTextbox(f, height=120, font=F(12), wrap="word")
+        self.audit_input.pack(fill="x", padx=16, pady=(0, 6))
+        self.audit_text = ctk.CTkTextbox(f, font=F(12), wrap="word")
+        self.audit_text.pack(fill="both", expand=True, padx=16, pady=(0, 14))
+
+    def _run_audit_products(self):
+        if not self.products:
+            messagebox.showinfo("提示", "还没有采集商品。请先采集 1688 货源, 或在上方粘贴文案手动体检。")
+            return
+        results = listing_audit_mod.audit_products(self.products)
+        sm = listing_audit_mod.summarize(results)
+        self.audit_text.delete("1.0", "end")
+        self.audit_text.insert("1.0", listing_audit_mod.render_report(results, sm))
+        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条")
+
+    def _run_audit_manual(self):
+        lines = [x.strip() for x in self.audit_input.get("1.0", "end").splitlines() if x.strip()]
+        if not lines:
+            messagebox.showinfo("提示", "请先在上方粘贴要体检的文案")
+            return
+        results = [listing_audit_mod.audit_text(t, f"文案{i+1}") for i, t in enumerate(lines)]
+        sm = listing_audit_mod.summarize(results)
+        self.audit_text.delete("1.0", "end")
+        self.audit_text.insert("1.0", listing_audit_mod.render_report(results, sm))
+        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条")
+
+    def _audit_ask_ai(self):
+        text = self.audit_input.get("1.0", "end").strip().splitlines()
+        if text and text[0].strip():
+            self._ai_quick("合规检查: " + text[0].strip())
+        else:
+            self._ai_quick("文案体检")
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):
@@ -2904,6 +3242,31 @@ class Workbench(ctk.CTk):
                 self._render_competitor()
             except Exception:
                 pass
+        elif kind == "cs_script_result":
+            res = payload or {}
+            reply = res.get("reply") or res.get("summary") or "(无话术)"
+            try:
+                self.cs_reply_text.delete("1.0", "end")
+                self.cs_reply_text.insert("1.0", reply)
+                color = UI_GREEN if res.get("passed", True) else UI_RED
+                self.cs_reply_status.configure(text=res.get("summary", ""), text_color=color)
+            except Exception:
+                pass
+            self._set_status("✅ 建议话术已生成, 请人工确认后复制")
+        elif kind == "cs_qa_result":
+            try:
+                self.cs_qa_text.delete("1.0", "end")
+                self.cs_qa_text.insert("1.0", str(payload))
+            except Exception:
+                pass
+            self._set_status("✅ 客服质检完成")
+        elif kind == "brief_result":
+            try:
+                self.brief_text.delete("1.0", "end")
+                self.brief_text.insert("1.0", str(payload))
+            except Exception:
+                pass
+            self._set_status("✅ 全店早报已生成")
         elif kind == "err":
             if isinstance(payload, str) and payload.startswith("推流词"):
                 self._update_title_progress("err:" + payload)

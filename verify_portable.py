@@ -20,7 +20,9 @@ MUST_FILES = [
     "启动工作台.vbs", "启动工作台_控制台.bat", "创建桌面快捷方式.vbs",
     "使用说明.txt", "pricing_config.json", "publish_config.json",
 ]
-MUST_DATA = ["collected_1688.json", "freight_rules.html", "freight_rules.json"]
+# 标准版为纯代码分发(CORE_DATA=[]), 不含样本业务数据;
+# collected_1688.json / freight_rules.* / sample_* 仅在 demo 包出现, 不再作为必需项。
+MUST_DATA = []  # 标准版 data/ 只需是可写空目录, 首次使用需自行采集
 
 fails = []
 

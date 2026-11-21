@@ -33,6 +33,11 @@ _space_test.tmp
 # ===== 抓取缓存 / 店铺业务数据 =====
 store_products.json
 suggest_cache.json
+# CLI 全链路生成的选品/上架报告(含抓取的业务数据)
+report_*.csv
+report_*.json
+# 客服话术库 / 客服分析缓存(含用户自定义话术, 不入库)
+data/cs_faq.json
 
 # ===== 系统 =====
 .DS_Store
