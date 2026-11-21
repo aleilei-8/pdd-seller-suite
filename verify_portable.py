@@ -57,33 +57,52 @@ chk("".join(chr(c) for c in (21551, 21160, 24037, 20316, 21488)) == "启动工�
     "快捷方式目标文件名拼装正确")
 
 
-def ico_png_markers(path: Path):
-    """取出 ICO 内每个 PNG 图标条的头部字节, 用于确认 exe 真的内嵌了自定义图标。"""
+def ico_sizes(path: Path):
+    """读取 ICO 内所有图标尺寸。"""
     try:
         b = path.read_bytes()
         cnt = struct.unpack_from("<H", b, 4)[0]
         out = []
         for i in range(cnt):
             o = 6 + 16 * i
-            n, pos = struct.unpack_from("<II", b, o + 8)
-            blob = b[pos:pos + n]
-            if blob.startswith(b"\x89PNG") and len(blob) >= 48:
-                out.append(blob[:48])
+            w, h = struct.unpack_from("<BB", b, o)
+            out.append((w or 256, h or 256))
         return out
     except Exception:
         return []
 
 
+def exe_has_embedded_icon(path: Path) -> bool:
+    """用 Windows ExtractIconExW 判断 exe 是否内嵌图标资源。
+
+    比字节匹配可靠: PyInstaller 会把 ICO 重编码进 PE 资源段,
+    原始 PNG 字节对不上, 但系统 API 能正确读出图标句柄。
+    """
+    if not path.is_file():
+        return False
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        from ctypes import wintypes
+        hicon = wintypes.HICON()
+        n = ctypes.windll.shell32.ExtractIconExW(
+            str(path), 0, ctypes.byref(hicon), None, 1)
+        got = n > 0 and bool(hicon)
+        if got and hicon:
+            ctypes.windll.user32.DestroyIcon(hicon)
+        return got
+    except Exception:
+        return False
+
+
 print("--- 图标资源 ---")
-markers = ico_png_markers(ICON)
-chk(bool(markers), f"应用图标.ico 含 {len(markers)} 个尺寸的多尺寸 PNG 图标")
+sizes = ico_sizes(ICON)
+chk(len(sizes) >= 5, f"应用图标.ico 含 {len(sizes)} 个尺寸: "
+                     f"{','.join(str(s[0]) for s in sizes)}")
 for label, path in (("主程序 PDDWorkbench.exe", EXE),
                     ("启动器 启动工作台.exe", LAUNCHER)):
-    try:
-        raw = path.read_bytes() if path.is_file() else b""
-    except Exception:
-        raw = b""
-    chk(any(m in raw for m in markers), f"{label} 已内嵌同款自定义图标")
+    chk(exe_has_embedded_icon(path), f"{label} 已内嵌自定义图标(系统 API 校验)")
 
 print("=== 2/3 exe 自检 (真正启动打包后的解释器) ===")
 if EXE.is_file():
