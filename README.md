@@ -11,6 +11,7 @@
 - **PDD 发布**（`src/pdd_publish.py`）：自动填 SKU 价格/库存/单买价/拼单价、商品参考价、属性、图片上传。
 - **一键搬迁脚本**（`migrate_one.py`）：`python migrate_one.py <1688链接或商品ID>` 完成采集→清单→核对报告；支持多链接与 `--no-collect`（复用本地数据）、`--summary-only`（只出汇总总表）。
 - **桌面 GUI**（`src/gui.py`）：左侧竖向图标侧栏（可折叠）、采集/上架/资料核对等模块。
+- **APP 图标 + 桌面快捷方式**（`make_icon.py`、`make_shortcut.py`）：squircle 现代图标（`assets/app.ico`），`python make_shortcut.py` 一键在桌面/开始菜单生成带图标的「拼多多工作台」入口，双击即启动、无黑窗。
 - **AI 助手**（`src/ai_assistant.py`）：自然语言一句话调用定价/选品/分析/库存/采集等只读动作；可选接入 DeepSeek 等模型，未配置走本地规则。
 - **广告投产 / 财务对账 / 竞品监控**（`src/ad_roi.py`、`finance.py`、`competitor.py`）：推广 ROI 诊断、扣广告费后的真实净利、竞品比价与跟价建议。
 - **客服助手**（`src/compliance.py`、`cs_scripts.py`、`cs_qa.py`、`cs_aftersales.py`、`cs_sla.py`）：话术台 / 客服质检 / 售后建议 / 响应时效，全部**只读建议**，见下方合规说明。
@@ -43,7 +44,8 @@ src/                核心模块（采集 / 定价 / 上架 / 发布 / GUI / AI�
 migrate_one.py      单品一键全量搬迁脚本
 app_main.py         主程序入口
 launcher_main.py    免安装版启动器
-make_icon.py        图标生成
+make_icon.py        应用图标生成（squircle 现代 APP 风格，多尺寸）
+make_shortcut.py    生成桌面/开始菜单「拼多多工作台」快捷方式（带图标）
 build_portable.py   打包免安装绿色版（PyInstaller onedir）
 PDDWorkbench.spec   PyInstaller 构建配置
 pricing_config.json 定价参数（佣金/运费/净利率）
