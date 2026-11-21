@@ -7,7 +7,9 @@
 
 设计原则:
 - 解析: 优先 LLM(OpenAI 兼容接口, 如 DeepSeek); 未配置/调用失败 → 本地规则解析兜底, 离线也可用。
-- 安全: v1 全部只读动作 + 采集预填(不自动执行任何写操作); 定价/上架等仍由人最终确认。
+- 安全: 全部只读动作 + 采集预填(不自动执行任何写操作); 定价/上架/客服回复等仍由人最终确认。
+- 客服模块(cs_*): 只生成建议话术/统计, 隐私先脱敏, 违禁词先护栏, 绝不自动发送或改售后单。
+- 编排升级: daily_brief(全店早报) / listing_audit(文案合规体检) 均为只读聚合/扫描, 不写任何数据。
 - 解耦: 本模块不 import tkinter, 不直接改 GUI 状态; 结果通过返回值交给 GUI 层。
 """
 import json
@@ -66,8 +68,15 @@ SYSTEM_PROMPT = """你是「拼多多全链路工作台」的 AI 助手, 负责�
 7. finance_report  全成本利润对账(把广告费扣进净利, 算真实净利; 需已导入订单CSV和推广报表)
 8. competitor_report  竞品价格监控(比价/跟价建议; 从竞品台账取数)
 9. review  点评选品/指定商品(配置了模型时给 AI 建议)。params: top_n(默认5)
-10. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
-11. help  问你能做什么
+10. cs_script  客服话术建议。params: question(买家问题原文,必填), product_info(商品公开信息,可选)。
+    注意: 本动作只读, 只生成建议话术供人工复制, 绝不自动发送。
+11. cs_qa  客服记录质检(需先在客服助手页导入聊天CSV)。统计高频问题/情绪/过度承诺。
+12. cs_aftersales  售后处理建议(需先在客服助手页导入售后CSV)。只出建议, 不代替执行。
+13. cs_sla  客服响应时效看板(需先导入聊天CSV)。纯统计。
+14. daily_brief  全店经营早报。跨模块聚合订单/广告/财务/竞品/库存/客服 → 全店体检 + 今日待办。纯只读。
+15. listing_audit  商品文案合规体检。扫描已采集商品标题/详情或手动文案里的极限词/违禁词。params: text(可选,手动文案); 无 text 则扫描已采集商品。
+16. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
+17. help  问你能做什么
 
 规则: 只输出 JSON, 不要输出其他任何文字。数字字段输出为数字而非字符串。"""
 
@@ -120,7 +129,9 @@ def llm_parse(text: str, cfg: dict):
     if not j or j.get("action") not in (
             "price_calc", "select_report", "orders_summary",
             "stock_report", "collect", "ad_report", "finance_report",
-            "competitor_report", "review", "chat", "help"):
+            "competitor_report", "review", "chat", "help",
+            "cs_script", "cs_qa", "cs_aftersales", "cs_sla",
+            "daily_brief", "listing_audit"):
         return None
     j.setdefault("params", {})
     j.setdefault("reply", "")
@@ -159,7 +170,15 @@ def rule_parse(text: str):
         return {"action": "collect", "params": {"urls": urls},
                 "reply": "", "source": "rule"}
 
-    # 2) 定价测算: 关键词 + 数字
+    # 2) 编排层二次升级: 全店早报 / 文案体检(需先于"经营/广告/标题"等单模块词)
+    if any(k in t for k in ("经营早报", "全店早报", "每日简报", "今日待办", "全店体检", "日报")):
+        return {"action": "daily_brief", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("文案体检", "违禁词", "极限词", "合规检查", "合规体检", "标题检查")):
+        m = re.search(r"[:：]\s*(.+)", t)
+        return {"action": "listing_audit", "params": {"text": m.group(1).strip() if m else ""},
+                "reply": "", "source": "rule"}
+
+    # 3) 定价测算: 关键词 + 数字
     nums = [float(x) for x in _NUM_RE.findall(t.replace("％", "%"))]
     if any(k in t for k in ("保本", "定价", "售价", "卖多少", "定价多少", "定价", "赚", "利润", "净利")) \
             and "率" not in t.replace("净利率", "") and nums:
@@ -199,6 +218,15 @@ def rule_parse(text: str):
         return {"action": "ad_report", "params": {}, "reply": "", "source": "rule"}
     if any(k in t for k in ("点评", "AI建议", "给建议", " Analyze")):
         return {"action": "review", "params": {}, "reply": "", "source": "rule"}
+    # 客服折中方案(只读)
+    if any(k in t for k in ("售后", "退款建议", "怎么处理退款", "售后建议")):
+        return {"action": "cs_aftersales", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("响应时效", "首响", "回复速度", "客服时效", "未回复")):
+        return {"action": "cs_sla", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("客服质检", "质检", "聊天记录分析", "客服记录")):
+        return {"action": "cs_qa", "params": {}, "reply": "", "source": "rule"}
+    if any(k in t for k in ("话术", "怎么回复", "回复买家", "客服回复", "帮我回")):
+        return {"action": "cs_script", "params": {"question": t}, "reply": "", "source": "rule"}
     if any(k in low for k in ("help", "帮助", "你能做什么", "怎么用", "功能")):
         return {"action": "help", "params": {}, "reply": "", "source": "rule"}
 
@@ -419,6 +447,12 @@ HELP_TEXT = """🤖 我能帮你做这些(直接说人话就行):
 📒 财务对账   「算一下扣掉广告费后的真实利润」(订单CSV+推广CSV, 在财务对账页刷新)
 🎯 竞品比价   「分析竞品价格」「对手卖多少钱」(在竞品监控页登记台账, 结合保本线给跟价建议)
 📝 商品点评   「点评这几个商品」(配置模型给 AI 建议, 没有则用本地规则)
+💬 客服话术   「怎么回复买家: 全网最低价吗」(生成建议话术, 合规检查后供人工复制, 不自动发送)
+🔍 客服质检   「客服质检」(需先导入聊天CSV; 高频问题/情绪/过度承诺)
+🛠 售后建议   「售后建议」(需先导入退款CSV; 只出处理建议, 不代替执行)
+⏱ 响应时效   「客服时效」(需先导入聊天CSV; 首响/未回复/高峰)
+📰 全店早报   「今日待办」「全店体检」(跨模块聚合出全店简报+优先待办)
+🛡 文案体检   「合规检查: 全网最低价面膜」(极速扫违禁词给安全替换文案)
 🔗 采集预填   直接粘贴 1688 链接, 我帮你填进采集窗口
 ⏰ 定时监控   点上方「定时监控」设置无人值守(价格/库存异常才提醒)
 💬 自由咨询   配置了模型 API 后, 电商问题也可以直接问我
@@ -476,6 +510,51 @@ def run_action(intent: dict, ctx: dict):
             return {"reply": competitor.render_report(res)}
         if action == "review":
             return _do_review(params, ctx)
+        # —— 客服折中方案(全部只读, 不触发任何写操作) ——
+        if action == "cs_script":
+            import cs_scripts
+            question = params.get("question") or intent.get("_text") or ""
+            res = cs_scripts.generate(question, params.get("product_info") or "")
+            if not res.get("reply"):
+                return {"reply": res.get("summary") or "没有匹配到话术。"}
+            src = {"llm": "AI 生成", "local": "本地话术库"}.get(res["source"], "本地")
+            body = res["reply"]
+            if res.get("findings"):
+                body += "\n\n" + res["summary"]
+            body += "\n\n（来源: " + src + "；仅供人工确认后复制, 不会自动发送）"
+            return {"reply": body}
+        if action == "cs_qa":
+            import cs_qa
+            rows = ctx.get("cs_chat_rows") or []
+            if not rows:
+                return {"reply": "还没有客服聊天记录。请先在「客服助手 → 客服质检」页导入聊天 CSV。"}
+            return {"reply": cs_qa.render_report(cs_qa.analyze(rows))}
+        if action == "cs_aftersales":
+            import cs_aftersales
+            rows = ctx.get("cs_after_rows") or []
+            if not rows:
+                return {"reply": "还没有售后数据。请先在「客服助手 → 售后建议」页导入退款 CSV。"}
+            return {"reply": cs_aftersales.render_report(cs_aftersales.analyze_all(rows))}
+        if action == "cs_sla":
+            import cs_sla
+            rows = ctx.get("cs_chat_rows") or []
+            if not rows:
+                return {"reply": "还没有客服聊天记录。请先在「客服助手 → 响应时效」页导入聊天 CSV。"}
+            return {"reply": cs_sla.render_report(cs_sla.analyze(rows))}
+        if action == "daily_brief":
+            import daily_brief
+            res = daily_brief.build(ctx)
+            return {"reply": daily_brief.render_report(res)}
+        if action == "listing_audit":
+            import listing_audit
+            text = params.get("text") or ""
+            if text:
+                results = [listing_audit.audit_text(text, "手动文案")]
+            else:
+                results = listing_audit.audit_products(ctx.get("products") or [])
+                if not results:
+                    return {"reply": "还没有采集到商品。请先采集 1688 货源, 或用「合规检查: 你的文案」直接粘贴文案体检。"}
+            return {"reply": listing_audit.render_report(results)}
     except Exception as e:
         return {"reply": f"执行出错: {e}\n请换个说法重试, 或直接用对应功能页操作。"}
     # chat / help
