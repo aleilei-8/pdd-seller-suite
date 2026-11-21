@@ -58,7 +58,7 @@ assets/             应用图标素材
 
 | 版本 | 标签 | 适用场景 |
 |---|---|---|
-| **纯代码版（默认）** | [`v1.0.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/v1.0.0) | 正式使用。**不含任何业务数据**。 |
+| **纯代码版（默认、最新）** | [`v1.1.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/v1.1.0) | 正式使用。**不含任何业务数据**。含客服助手/全店早报/文案体检。 |
 | **示例数据 Demo 版** | [`demo-v1.0.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/demo-v1.0.0) | 想直接体验界面与数据格式。内置【示例/脱敏】数据。 |
 
 > ⚠️ **纯代码版首次使用需自行采集**：该版本只含程序本身，打开后 `data/` 为空，
