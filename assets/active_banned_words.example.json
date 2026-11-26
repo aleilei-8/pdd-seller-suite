@@ -1,0 +1,28 @@
+{
+  "_note": "私有活清单模板：只记录你自己店铺被驳回过的词、同行被罚过的表达、平台临时收紧的词。此文件在 data/ 下已被 .gitignore 忽略，不会随工具分发。可直接编辑 words，也可以用 GUI『文案体检 → ➕ 记录驳回词』自动写入。",
+  "version": 1,
+  "updated": "",
+  "shop": "",
+  "words": [],
+  "_example": [
+    {
+      "term": "最好用",
+      "category": "驳回词",
+      "severity": "high",
+      "hint": "体验不错",
+      "aliases": ["最好用的", "蕞好用"],
+      "source": "示例：2026-11-20 某商品标题被驳回（请替换成你的真实记录）",
+      "enabled": true
+    },
+    {
+      "term": "全网最低价",
+      "category": "价格违规",
+      "severity": "high",
+      "hint": "平台优惠价",
+      "aliases": ["全网最低", "全网底价"],
+      "source": "示例：同行被罚词",
+      "enabled": true
+    },
+    "纯字符串写法也可以，默认按 high 处理"
+  ]
+}

@@ -20,7 +20,7 @@ import queue
 import threading
 import tkinter as tk
 from pathlib import Path
-from tkinter import ttk, messagebox, filedialog
+from tkinter import ttk, messagebox, filedialog, simpledialog
 
 import customtkinter as ctk
 
@@ -50,6 +50,7 @@ import finance as finance_mod
 import competitor as competitor_mod
 # 客服折中方案(只读, 合规护栏): 惰性业务模块, import 轻量, 启动无副作用
 import compliance as compliance_mod
+import active_words as active_words_mod
 import cs_scripts as cs_scripts_mod
 import cs_qa as cs_qa_mod
 import cs_aftersales as cs_aftersales_mod
@@ -1299,11 +1300,22 @@ class Workbench(ctk.CTk):
     def _tab_audit(self):
         f = self.tabs.tab("文案体检")
         self._hint(f, "🛡 上架前扫一遍: 广告法极限词 / 虚假承诺 / 平台违禁词, 给出安全替换文案。"
+                      "叠加语义等价检测(最好→最佳/首选/顶级)和你的私有活清单。"
                       "纯本地规则扫描, 不修改商品; 替换仅供参考, 上架前请人工复核。", "danger")
         top = self._section(f, "文案体检", "可手动粘贴文案, 或一键扫描全部已采集商品", "orange")
         self._btn(top, "🔍 扫描已采集商品", self._run_audit_products, "orange", 150)
         self._btn(top, "📝 体检下方文案", self._run_audit_manual, "blue", 130)
         self._btn(top, "问 AI 助手", self._audit_ask_ai, "ghost", 110)
+        bar = ctk.CTkFrame(f, fg_color="transparent")
+        bar.pack(fill="x", padx=16, pady=(2, 0))
+        self._btn(bar, "🔒 生成活清单", self._create_active_words, "ghost", 118)
+        self._btn(bar, "➕ 记录驳回词", self._add_active_word, "orange", 118)
+        self._btn(bar, "🔄 重载活清单", self._reload_active_words, "blue", 118)
+        self._btn(bar, "📄 打开活清单", self._open_active_words, "ghost", 118)
+        self.audit_active_label = ctk.CTkLabel(
+            f, text="", font=F(11), text_color=UI_TEXT, anchor="w", justify="left")
+        self.audit_active_label.pack(fill="x", padx=16, pady=(0, 2))
+        self._refresh_active_label()
         ctk.CTkLabel(f, text="手动文案(一行一条, 可粘贴标题/卖点/详情):",
                      font=F(12, True), text_color=UI_TEXT).pack(anchor="w", padx=16, pady=(8, 2))
         self.audit_input = ctk.CTkTextbox(f, height=120, font=F(12), wrap="word")
@@ -1319,7 +1331,9 @@ class Workbench(ctk.CTk):
         sm = listing_audit_mod.summarize(results)
         self.audit_text.delete("1.0", "end")
         self.audit_text.insert("1.0", listing_audit_mod.render_report(results, sm))
-        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条")
+        self._refresh_active_label()
+        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条, "
+                         f"语义等价 {sm['semantic_hits']} 处")
 
     def _run_audit_manual(self):
         lines = [x.strip() for x in self.audit_input.get("1.0", "end").splitlines() if x.strip()]
@@ -1330,7 +1344,9 @@ class Workbench(ctk.CTk):
         sm = listing_audit_mod.summarize(results)
         self.audit_text.delete("1.0", "end")
         self.audit_text.insert("1.0", listing_audit_mod.render_report(results, sm))
-        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条")
+        self._refresh_active_label()
+        self._set_status(f"✅ 文案体检完成: {sm['total']} 条, 高风险 {sm['high']} 条, "
+                         f"语义等价 {sm['semantic_hits']} 处")
 
     def _audit_ask_ai(self):
         text = self.audit_input.get("1.0", "end").strip().splitlines()
@@ -1338,6 +1354,61 @@ class Workbench(ctk.CTk):
             self._ai_quick("合规检查: " + text[0].strip())
         else:
             self._ai_quick("文案体检")
+
+    # ---------- 私有活清单: 只在本机读写, 不入库不上传 ----------
+    def _refresh_active_label(self):
+        label = getattr(self, "audit_active_label", None)
+        if label is None:
+            return
+        st = active_words_mod.stats()
+        if st["error"]:
+            msg = (f"🔒 私有活清单: 未创建 — 点『生成活清单』开始记录你的被驳回词 "
+                   f"({st['path']})") if not st["exists"] else f"⚠ 私有活清单: {st['error']}"
+            color = UI_ORANGE if not st["exists"] else UI_RED
+        else:
+            msg = (f"🔒 私有活清单: 已加载 {st['loaded']} 条 — 命中会标注『私有活清单』, "
+                   f"数据只在本机, 不入库不上传")
+            color = UI_GREEN
+        label.configure(text=msg, text_color=color)
+
+    def _create_active_words(self):
+        ok, msg = active_words_mod.create_template()
+        self._refresh_active_label()
+        (messagebox.showinfo if ok else messagebox.showwarning)("私有活清单", msg)
+
+    def _add_active_word(self):
+        term = simpledialog.askstring("记录驳回词", "输入被平台驳回/被罚过的词：", parent=self)
+        if term is None:
+            return
+        term = term.strip()
+        if not term:
+            return
+        ok, msg = active_words_mod.append_word(term, source="GUI 手工记录")
+        self._refresh_active_label()
+        if ok:
+            self._set_status(f"✅ {msg}")
+        else:
+            messagebox.showwarning("私有活清单", msg)
+
+    def _reload_active_words(self):
+        active_words_mod.load(force=True)
+        st = active_words_mod.stats()
+        self._refresh_active_label()
+        self._set_status(f"✅ 私有活清单已重载: {st['loaded']} 条")
+
+    def _open_active_words(self):
+        st = active_words_mod.stats()
+        p = Path(st["path"])
+        if not p.exists():
+            ok, msg = active_words_mod.create_template()
+            if not ok:
+                messagebox.showerror("打开活清单", msg)
+                return
+            p = Path(active_words_mod.stats()["path"])
+        try:
+            os.startfile(str(p))
+        except Exception as exc:
+            messagebox.showerror("打开活清单", f"无法打开: {exc}\n路径: {p}")
 
     # ---------- 统一布局组件 ----------
     def _btn(self, parent, text, command, tone="blue", width=110):

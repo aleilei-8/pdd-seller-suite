@@ -21,6 +21,9 @@
     guard(text)         -> {passed, findings, safe_text, summary}
 """
 import re
+import unicodedata
+
+import active_words
 
 # ---------- 违禁词表 ----------
 # (词/正则, 类别, 严重度 high/medium/low, 替换建议)
@@ -90,6 +93,140 @@ BANNED = [
     ("刷好评", "平台违禁", "high", ""),
 ]
 
+# ---------- 语义等价簇 (换皮词检测) ----------
+# 广告法判断的是语义, 不是字面: "最好"换成"最佳/首选/顶级/最棒"照样违规。
+# 字面命中的词由 BANNED 负责; 这里覆盖的是"换了皮但语义没变"的表达。
+# 每条: id / canonical / category / severity / hint / aliases / patterns
+# - aliases: 明确等价词, 在归一化文本上精确匹配
+# - patterns: 变形写法(插空格、简繁、拆字、英文排名写法)
+# 注意: 这里只做本地规则提示, 不联网、不送模型, 误报时人工复核即可。
+SEMANTIC_CLUSTERS = [
+    {
+        "id": "absolute_top", "canonical": "最好",
+        "category": "极限词(语义等价)", "severity": "high", "hint": "体验更佳/表现不错",
+        "aliases": [
+            "最棒", "最赞", "最牛", "最牛逼", "最给力", "最靠谱", "最专业", "最先进",
+            "最安全", "最有效", "最优秀", "最强悍", "最好用", "最佳选择", "首选品牌",
+            "顶配", "顶流", "顶级配置", "巅峰之作", "无出其右", "无人能及",
+            "史无前例", "绝无仅有", "前无古人", "行业第一", "全网第一", "销量冠军",
+            "no1", "no.1", "top1", "top 1", "number one",
+        ],
+        "patterns": [
+            r"最[\s·•\-—_]*[好佳强优棒赞牛省惠]",
+            r"(?:行业|全网|销量|排名|全网销量)第\s*[一1]",
+            r"no\.?\s*1", r"top\s*0?1", r"number\s*one",
+        ],
+    },
+    {
+        "id": "absolute_rare", "canonical": "唯一",
+        "category": "排他用语(语义等价)", "severity": "high", "hint": "独具特色",
+        "aliases": ["唯一指定", "仅此一家", "别无二家", "独家首发", "绝无二家", "独此一家"],
+        "patterns": [r"唯\s*一\s*(?:指定|一家|选择|渠道)"],
+    },
+    {
+        "id": "exclusive_soft", "canonical": "独家",
+        "category": "排他用语(语义等价)", "severity": "medium", "hint": "有授权的独家可保留, 否则改成具体特点",
+        "aliases": ["独家", "首家", "首创", "独家定制", "限量首发", "独一无二"],
+        "patterns": [],
+    },
+    {
+        "id": "exaggeration", "canonical": "天花板",
+        "category": "夸大宣传(语义等价)", "severity": "medium", "hint": "用可验证的具体描述",
+        "aliases": ["天花板", "天花板级", "天花板级别", "神级", "封神", "王者级", "标杆产品"],
+        "patterns": [],
+    },
+    {
+        "id": "price_bottom", "canonical": "最低价",
+        "category": "极限词(语义等价)", "severity": "high", "hint": "平台优惠价/近期优惠价",
+        "aliases": [
+            "全网底价", "地板价", "跳楼价", "亏本价", "白菜价", "史低", "历史最低",
+            "击穿底价", "一降到底", "史上最划算", "全网最低价", "全网最低",
+        ],
+        "patterns": [r"史[上]?最(?:低|便宜|划算)", r"(?:全网|全店|历史)最(?:低|划算|便宜)"],
+    },
+    {
+        "id": "price_soft", "canonical": "超低价",
+        "category": "价格表述(语义等价)", "severity": "medium", "hint": "价格实惠",
+        "aliases": ["超低价", "特价中的特价", "冰点价", "抄底价"],
+        "patterns": [],
+    },
+    {
+        "id": "absolute_promise", "canonical": "绝对",
+        "category": "虚假承诺(语义等价)", "severity": "high", "hint": "改成可验证的具体条件",
+        "aliases": [
+            "零风险", "无副作用", "万无一失", "保证有效", "一定有效", "包好",
+            "包过", "永不", "百分百正品", "100%正品", "绝对正品", "无条件退换",
+        ],
+        "patterns": [r"100\s*%\s*(?:正品|有效|安全|无副作用)"],
+    },
+    {
+        "id": "medical_claim", "canonical": "治疗",
+        "category": "医疗功效(语义等价)", "severity": "high", "hint": "删除医疗功效表述(如属实需资质)",
+        "aliases": [
+            "治疗", "治愈", "疗效", "药效", "康复", "抗癌", "防癌", "增强免疫力",
+            "延年益寿", "降血压", "降血糖", "处方药", "包治百病", "治百病",
+        ],
+        "patterns": [],
+    },
+    {
+        "id": "effect_claim", "canonical": "立竿见影",
+        "category": "效果承诺(语义等价)", "severity": "high", "hint": "效果因人而异",
+        "aliases": [
+            "立竿见影", "一次见效", "瞬间见效", "马上见效", "即刻见效",
+            "快速见效", "见效快", "永久有效", "终身有效",
+        ],
+        "patterns": [r"\d+\s*天\s*(?:见效|美白|祛斑|瘦身|见效)"],
+    },
+    {
+        "id": "private_traffic", "canonical": "私聊",
+        "category": "平台违禁(语义等价)", "severity": "high", "hint": "请在平台内沟通",
+        "aliases": [
+            "私聊", "站外交易", "二维码", "扫码", "薇信", "威信", "扣扣",
+            "QQ群", "加Q", "vx", "wechat", "手机号联系", "联系方式",
+        ],
+        "patterns": [r"加\s*[Vv薇威]\s*信?", r"[Vv]\s*我", r"vx\s*[:：]?", r"扫码\s*(?:加|聊|领)"],
+    },
+    {
+        "id": "rebate", "canonical": "返现",
+        "category": "平台违禁(语义等价)", "severity": "high", "hint": "删除好评返现相关表述",
+        "aliases": [
+            "返现", "好评送礼", "晒图返现", "晒单返现", "评价返现",
+            "五星好评返现", "好评有礼", "晒图有礼",
+        ],
+        "patterns": [r"(?:好评|晒图|晒单|五星)\s*(?:返|送|礼|奖)"],
+    },
+    {
+        "id": "authority", "canonical": "权威认证",
+        "category": "权威背书(语义等价)", "severity": "high", "hint": "无授权/依据请删除",
+        "aliases": [
+            "央视推荐", "央视上榜", "中科院认证", "国家认证", "权威认证",
+            "政府推荐", "指定用品", "驰名商标", "中国名牌", "免检产品",
+        ],
+        "patterns": [],
+    },
+    {
+        "id": "authority_soft", "canonical": "明星同款",
+        "category": "权威背书(语义等价)", "severity": "medium", "hint": "需真实可查且有授权",
+        "aliases": ["明星同款", "专家推荐", "医生推荐", "达人推荐"],
+        "patterns": [],
+    },
+    {
+        "id": "superstition", "canonical": "转运",
+        "category": "迷信低俗(语义等价)", "severity": "medium", "hint": "避免封建迷信表述",
+        "aliases": ["转运", "招财", "辟邪", "开光", "风水", "旺夫", "驱邪", "改运"],
+        "patterns": [],
+    },
+    {
+        "id": "beauty_special", "canonical": "美白",
+        "category": "美妆功效(需特证)", "severity": "low", "hint": "特殊功效需特证/检测报告, 无依据请删除; 非美妆品类可忽略",
+        "aliases": [
+            "美白", "祛斑", "抗衰老", "除皱", "抗皱", "淡斑", "防晒",
+            "祛痘", "生发", "瘦身", "减肥", "丰胸",
+        ],
+        "patterns": [],
+    },
+]
+
 # ---------- 隐私脱敏规则 ----------
 # (名称, 正则, 掩码). 顺序重要: 长/特定的放前面, 避免被短规则先吃掉。
 PII_PATTERNS = [
@@ -121,45 +258,199 @@ for _w, _cat, _sev, _hint in BANNED:
     else:
         _COMPILED.append((None, _cat, _sev, _hint, _w))
 
+# ---------- 语义等价: 归一化 ----------
+# 换皮常见手法: 插空格/标点、简繁替换、谐音同形字、全角、英文排名写法。
+# 归一化时同步记录每个字符在原文中的下标, 命中后能准确回到原文位置替换。
+_SKIP_PUNCT = frozenset(
+    " \t\r\n\v\f·•∙・‧-—–_~～./\\|[]()（）【】〔〕《》〈〉「」『』"
+    ",，。.!！?？:：;；'\"“”‘’`^*+=<>￥$"
+)
+_CONFUSABLE = {
+    "蕞": "最", "冣": "最", "頂": "顶", "級": "级", "選": "选", "優": "优",
+    "極": "极", "網": "网", "絡": "络", "價": "价", "銷": "销", "國": "国",
+    "際": "际", "獨": "独", "無": "无", "萬": "万", "終": "终", "療": "疗",
+    "癒": "愈", "証": "证", "認": "认", "權": "权", "實": "实", "產": "产",
+    "薇": "微", "衛": "卫", "饋": "馈", "贈": "赠",
+}
 
-def scan(text: str):
-    """扫描违禁词, 返回命中列表 (不修改文本)。
 
-    每条命中: {keyword, category, severity, hint, start, end, matched}
-    """
-    text = text or ""
-    out = []
-    for rx, cat, sev, hint, word in _COMPILED:
-        if rx:
-            it = rx.finditer(text)
-        else:
-            # 普通词: 大小写不敏感的字面匹配
-            it = re.finditer(re.escape(word), text, re.I)
-        for m in it:
-            out.append({
-                "keyword": word,
-                "category": cat,
-                "severity": sev,
-                "hint": hint,
-                "start": m.start(),
-                "end": m.end(),
-                "matched": m.group(0),
-            })
-    # 按位置排序, 同起点时更长的匹配优先(避免「全网最低」吃掉「全网最低价」的价)
-    out.sort(key=lambda x: (x["start"], -x["end"]))
+def _normalize(text):
+    """返回 (归一化文本, 每个归一化字符对应的原文下标)。"""
+    chars, positions = [], []
+    for i, ch in enumerate(text or ""):
+        c = unicodedata.normalize("NFKC", ch)
+        if len(c) != 1:
+            c = ch
+        c = _CONFUSABLE.get(c, c)
+        if c in _SKIP_PUNCT:
+            continue
+        chars.append(c)
+        positions.append(i)
+    return "".join(chars), positions
+
+
+_SEMANTIC_READY = []
+for _c in SEMANTIC_CLUSTERS:
+    _SEMANTIC_READY.append({
+        "id": _c["id"],
+        "category": _c["category"],
+        "severity": _c["severity"],
+        "hint": _c["hint"],
+        "aliases": [
+            (a, _normalize(a)[0].lower(), _c["category"], _c["severity"], _c["hint"])
+            for a in _c.get("aliases", []) if _normalize(a)[0]
+        ],
+        "patterns": [re.compile(p) for p in _c.get("patterns", [])],
+    })
+
+# 通用字面词的「换皮变体」也走语义层: 繁体(頂級)、同形字(蕞好)、插空格(最 好)、
+# 全角(１００％) 等, 字面规则抓不到, 归一化后按原词的类别/严重度报出。
+_SEMANTIC_READY.append({
+    "id": "banned_variant",
+    "category": "换皮词(语义等价)",
+    "severity": "high",
+    "hint": "",
+    "aliases": [
+        (w, _normalize(w)[0].lower(), cat, sev, hint)
+        for w, cat, sev, hint in BANNED
+        if not w.startswith("r:") and _normalize(w)[0]
+    ],
+    "patterns": [],
+})
+
+_SEV_RANK = {"high": 3, "medium": 2, "low": 1}
+_SRC_RANK = {"active": 3, "literal": 2, "semantic": 1}
+
+
+def _finding(keyword, category, severity, hint, start, end, matched,
+             source="literal", match_type="exact", cluster="", confidence="high"):
+    """统一命中结构; 旧字段保持不变, 新增 source/match_type/cluster/confidence。"""
+    return {
+        "keyword": keyword,
+        "category": category,
+        "severity": severity,
+        "hint": hint,
+        "start": start,
+        "end": end,
+        "matched": matched,
+        "source": source,
+        "match_type": match_type,
+        "cluster": cluster,
+        "confidence": confidence,
+    }
+
+
+def _better(a, b):
+    """重叠命中取舍: 严重度 > 覆盖长度 > 来源优先级(私有活清单最高)。"""
+    sa, sb = _SEV_RANK.get(a["severity"], 0), _SEV_RANK.get(b["severity"], 0)
+    if sa != sb:
+        return sa > sb
+    la, lb = a["end"] - a["start"], b["end"] - b["start"]
+    if la != lb:
+        return la > lb
+    return _SRC_RANK.get(a.get("source"), 0) > _SRC_RANK.get(b.get("source"), 0)
+
+
+def _dedup(out):
+    """按位置去重; 同位置保留更危险/更长/来源更可信的一条。"""
+    out.sort(key=lambda x: (x["start"], -(x["end"] - x["start"])))
     dedup = []
     for f in out:
         if dedup and f["start"] < dedup[-1]["end"]:
-            rank = {"high": 3, "medium": 2, "low": 1}
-            cur = dedup[-1]
-            # 更危险 或 同危险但更长 → 采用新命中
-            if (rank.get(f["severity"], 0) > rank.get(cur["severity"], 0)
-                    or (f["severity"] == cur["severity"]
-                        and (f["end"] - f["start"]) > (cur["end"] - cur["start"]))):
+            if _better(f, dedup[-1]):
                 dedup[-1] = f
             continue
         dedup.append(f)
     return dedup
+
+
+def _scan_literal(text):
+    """原有字面/正则规则扫描 (保留为独立入口, 便于对比)。"""
+    out = []
+    for rx, cat, sev, hint, word in _COMPILED:
+        it = rx.finditer(text) if rx else re.finditer(re.escape(word), text, re.I)
+        for m in it:
+            out.append(_finding(word, cat, sev, hint, m.start(), m.end(), m.group(0),
+                                "literal", "regex" if rx else "exact"))
+    return out
+
+
+def scan_semantic(text):
+    """语义等价扫描: 换皮词 / 插空格 / 简繁 / 同形字 / 英文排名写法。"""
+    text = text or ""
+    norm, pos = _normalize(text)
+    low = norm.lower()
+    if not low:
+        return []
+    out = []
+    for c in _SEMANTIC_READY:
+        for display, needle, cat, sev, hint in c["aliases"]:
+            if not needle:
+                continue
+            start = 0
+            while True:
+                i = low.find(needle, start)
+                if i < 0:
+                    break
+                s, e = pos[i], pos[i + len(needle) - 1] + 1
+                out.append(_finding(display, cat, sev, hint,
+                                    s, e, text[s:e], "semantic", "alias", c["id"]))
+                start = i + 1
+        for rx in c["patterns"]:
+            for m in rx.finditer(low):
+                if not m.group(0):
+                    continue
+                s, e = pos[m.start()], pos[m.end() - 1] + 1
+                out.append(_finding(m.group(0), c["category"], c["severity"], c["hint"],
+                                    s, e, text[s:e], "semantic", "pattern", c["id"]))
+    return out
+
+
+def scan_active(text):
+    """店铺私有活清单扫描 (精确字面匹配, 不模糊归一化, 避免误伤)。"""
+    text = text or ""
+    low = text.lower()
+    out = []
+    for e in active_words.entries():
+        for term in [e["term"]] + list(e["aliases"]):
+            needle = str(term).strip()
+            if not needle:
+                continue
+            nl = needle.lower()
+            start = 0
+            while True:
+                i = low.find(nl, start)
+                if i < 0:
+                    break
+                out.append(_finding(needle, e["category"], e["severity"], e["hint"],
+                                    i, i + len(needle), text[i:i + len(needle)],
+                                    "active", "active", "active"))
+                start = i + 1
+    return out
+
+
+def scan(text: str):
+    """扫描违禁词, 返回命中列表 (不修改文本)。
+
+    命中来源 source: literal(通用规则) / semantic(语义等价) / active(私有活清单)。
+    兼容旧字段: keyword, category, severity, hint, start, end, matched。
+    """
+    text = text or ""
+    return _dedup(_scan_literal(text) + scan_semantic(text) + scan_active(text))
+
+
+def hit_summary(findings):
+    """按来源统计命中, 供 GUI / 报告展示。"""
+    from collections import Counter
+    c = Counter(f.get("source", "literal") for f in findings or [])
+    bits = []
+    if c.get("literal"):
+        bits.append(f"通用规则 {c['literal']}")
+    if c.get("semantic"):
+        bits.append(f"语义等价 {c['semantic']}")
+    if c.get("active"):
+        bits.append(f"私有活清单 {c['active']}")
+    return " / ".join(bits) if bits else "无命中"
 
 
 def redact(text: str, findings=None):
@@ -229,5 +520,7 @@ if __name__ == "__main__":
             "订单号12345678901234, 想要全网最低价, 加微信给你好评返现")
     print("原文:", demo)
     print("\n扫描:", scan(demo))
+    print("\n来源:", hit_summary(scan(demo)))
     print("\n脱敏:", desensitize(demo))
     print("\n护栏:", guard(demo))
+    print("\n语义等价示例:", [f["matched"] for f in scan("最 棒 的顶级面膜 NO.1 加薇信")])

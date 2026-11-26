@@ -16,7 +16,7 @@
 - **广告投产 / 财务对账 / 竞品监控**（`src/ad_roi.py`、`finance.py`、`competitor.py`）：推广 ROI 诊断、扣广告费后的真实净利、竞品比价与跟价建议。
 - **客服助手**（`src/compliance.py`、`cs_scripts.py`、`cs_qa.py`、`cs_aftersales.py`、`cs_sla.py`）：话术台 / 客服质检 / 售后建议 / 响应时效，全部**只读建议**，见下方合规说明。
 - **全店经营早报**（`src/daily_brief.py`）：跨模块聚合订单/广告/财务/竞品/库存/客服 → 全店体检 + 今日优先待办，一句话看全店。纯只读。
-- **商品文案合规体检**（`src/listing_audit.py`）：上架前扫描商品标题/详情/话术的广告法极限词、虚假承诺、平台违禁词，给安全替换文案。纯只读。
+- **商品文案合规体检**（`src/listing_audit.py`）：上架前扫描商品标题/详情/话术的广告法极限词、虚假承诺、平台违禁词，给安全替换文案。叠加**语义等价检测**（最好→最佳/首选/顶级/蕞好/最 好）与**店铺私有活清单**。纯只读。
 
 ### 客服助手与合规边界（重要）
 
@@ -35,6 +35,18 @@
 - **纯本地规则可用**：未配置模型时走内置话术库，离线也能用；数据保存在本地 `data/`，不入库。
 - **人工最终确认**：所有输出均为「建议」，需由你确认后再到拼多多后台操作。
 
+### 私有活清单与语义等价检测（差异化护城河）
+
+公开版只带通用规则；**你自己店铺被驳回过的词**放在本地 `data/active_banned_words.json`，
+该文件已被 `.gitignore` 排除、不入库、不打包、不上传——绝不会随工具分发给同行。
+
+- **语义等价**：`src/compliance.py` 内置 15 组语义簇 + 归一化（繁体/同形字/插空格/全角/英文排名），
+  识别"最好→最棒/首选/行业第一/蕞好/最 好"这类**换皮绝对化词**，不再只做字面替换。
+- **私有活清单**：GUI「文案体检」页可一键生成、记录驳回词、重载、打开编辑；命中会标注「私有活清单」。
+  支持别名、严重度、替换建议、来源备注；文件改动自动热重载，GUI 不用重启。
+- 命中来源分三类：`literal`（通用规则）/ `semantic`（语义等价）/ `active`（私有活清单），
+  报告里分别统计，方便判断是真风险还是误报。
+
 > 数据在 `data/` 与 `pdd_profile/` 中，已通过 `.gitignore` 排除，切勿提交或分享含登录态/买家隐私的文件。
 
 ## 目录
@@ -50,7 +62,22 @@ build_portable.py   打包免安装绿色版（PyInstaller onedir）
 PDDWorkbench.spec   PyInstaller 构建配置
 pricing_config.json 定价参数（佣金/运费/净利率）
 publish_config.json 发布参数（库存上限/图片上限/折扣等）
-assets/             应用图标素材
+assets/             应用图标素材 + 私有活清单示例模板
+test_compliance_v2.py 语义等价/活清单自测（python test_compliance_v2.py）
+```
+
+私有活清单（本地、不入库）示例结构见 `assets/active_banned_words.example.json`：
+
+```json
+{
+  "version": 1,
+  "updated": "2026-11-27",
+  "words": [
+    {"term": "最好用", "category": "驳回词", "severity": "high",
+     "hint": "体验不错", "aliases": ["最好用的"], "source": "标题被驳回", "enabled": true},
+    "全网最低价"
+  ]
+}
 ```
 
 ## 下载免安装版（GitHub Releases）
@@ -60,7 +87,7 @@ assets/             应用图标素材
 
 | 版本 | 标签 | 适用场景 |
 |---|---|---|
-| **纯代码版（默认、最新）** | [`v1.1.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/v1.1.0) | 正式使用。**不含任何业务数据**。含客服助手/全店早报/文案体检。 |
+| **纯代码版（默认、最新）** | [`v1.1.3`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/v1.1.3) | 正式使用。**不含任何业务数据**。含客服助手/全店早报/文案体检（语义等价 + 私有活清单）。 |
 | **示例数据 Demo 版** | [`demo-v1.0.0`](https://github.com/aleilei-8/pdd-seller-suite/releases/tag/demo-v1.0.0) | 想直接体验界面与数据格式。内置【示例/脱敏】数据。 |
 
 > ⚠️ **纯代码版首次使用需自行采集**：该版本只含程序本身，打开后 `data/` 为空，

@@ -25,10 +25,11 @@ ICON = ROOT / "assets" / "app.ico"
 LAUNCHER_EXE = "启动工作台.exe"
 LAUNCHER_BUILD = ROOT / "build" / "launcher_dist" / "WorkbenchLauncher.exe"
 
-# 随包携带的非敏感数据(报告/样本/采集结果)
+# 随包携带的非敏感数据: 只有配置文件。
+# 注意: store_products.json(店铺商品抓取缓存) / suggest_cache.json(联想词缓存)
+# 属于业务数据, .gitignore 中已排除, 绝不随公开版分发; 需要时由 GUI 现场生成。
 CORE_FILES = [
     "pricing_config.json", "publish_config.json",
-    "store_products.json", "suggest_cache.json",
 ]
 # 标准版不再随包携带样本业务数据(纯代码分发): collected_1688.json / freight_rules.*
 # / sample_* 等含真实货源与运费规则, 不应分发给下载者。如需演示, 另发 demo 包。
@@ -254,6 +255,10 @@ def main():
     (DIST / "创建桌面快捷方式.vbs").write_text(SHORTCUT_VBS, encoding="ascii")
     (DIST / "使用说明.txt").write_text(README, encoding="utf-8-sig")
     copy_optional(ICON, DIST / "应用图标.ico", "应用图标.ico")
+    # 私有活清单模板: 供 GUI「生成活清单」使用; 只是空模板, 不含任何店铺数据
+    copy_optional(ROOT / "assets" / "active_banned_words.example.json",
+                  DIST / "assets" / "active_banned_words.example.json",
+                  "assets/active_banned_words.example.json (空模板)")
     print(f"  [ok]   {LAUNCHER_EXE} / 快捷方式.vbs / vbs / bat / ico / 使用说明.txt")
 
     if args.with_browsers:

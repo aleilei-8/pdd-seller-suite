@@ -38,6 +38,9 @@ report_*.csv
 report_*.json
 # 客服话术库 / 客服分析缓存(含用户自定义话术, 不入库)
 data/cs_faq.json
+# 店铺私有「活清单」(被驳回过的词/同行被罚词) —— 护城河数据, 绝不入库/不分发
+# 注意: data/ 已整体忽略, 这里再显式声明一次以防将来调整忽略规则
+data/active_banned_words.json
 
 # ===== 系统 / 本地快捷方式 =====
 # .lnk 含本机绝对路径, 由 make_shortcut.py 现场生成, 不入库
