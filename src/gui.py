@@ -60,6 +60,7 @@ import cs_sla as cs_sla_mod
 import daily_brief as daily_brief_mod
 import listing_audit as listing_audit_mod
 import temu as temu_mod
+import temu_images as temu_img_mod
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -2068,6 +2069,14 @@ class Workbench(ctk.CTk):
         self.t_temu.frame.pack(fill="both", expand=False, padx=14, pady=(2, 4))
         self.temu_detail = self._info_card(f, "👆 点「筛选并测算」查看供货价拆解; 先到「选品评分」采集 1688 货源。")
 
+        # 图片素材包: 下载 -> 保守抠白底 -> 合规质检 -> 导出清单
+        sec = self._section(f, "📷 商品图片素材包", "下载推荐款主图, 自动抠白底 + 质检, 不合格明确标记", "purple")
+        self._btn(sec, "⬇️ 生成素材包", self._run_temu_images, "blue", 130)
+        self._btn(sec, "📂 打开素材目录", self._open_temu_images, "ghost", 140)
+        self._btn(sec, "⚠️ 查看图片体检表", self._open_temu_audit, "ghost", 150)
+        self._hint(f, "OK=可直接用 · REVIEW=复杂底/带字/贴边, 需重拍或人工去背; 主图必须纯白底≥800px。", "info")
+        self.temu_img_detail = self._info_card(f, "先点「筛选并测算」, 再生成素材包; 只处理推荐款。")
+
     def _temu_rows(self):
         products = self.products or temu_mod.load_products()
         if not products:
@@ -2116,6 +2125,57 @@ class Workbench(ctk.CTk):
             self._set_status(f"✅ 核价记录表: {p.name}")
         except Exception as e:
             self.temu_detail.configure(text=f"导出失败: {e}")
+
+    def _run_temu_images(self):
+        rows = getattr(self, "temu_rows_cache", None) or self._temu_rows()
+        if not rows:
+            self.temu_img_detail.configure(text="请先点「筛选并测算」。")
+            return
+        products = self.products or temu_mod.load_products()
+        if not products:
+            self.temu_img_detail.configure(text="没有采集数据, 请先到「选品评分」采集 1688 商品。")
+            return
+        rec_n = sum(1 for r in rows if getattr(r, "recommend", False))
+        if not rec_n:
+            self.temu_img_detail.configure(text="没有推荐款, 素材包为空。请调整测算条件或换货源。")
+            return
+        self.temu_img_detail.configure(text=f"正在处理 {rec_n} 款推荐商品图片...\n下载 → 抠白底 → 质检, 请稍候。")
+        self.update_idletasks()
+        try:
+            def pbar(level, msg):
+                self._set_status(msg)
+                self.update_idletasks()
+
+            result = temu_img_mod.build_package(products, rows, progress=pbar)
+            self.temu_img_result = result
+            self.temu_img_detail.configure(text=temu_img_mod.render_report(result))
+            self._set_status(f"✅ 素材包完成: OK {result['stats'].get('OK',0)} / REVIEW "
+                             f"{result['stats'].get('REVIEW',0)} / FAIL {result['stats'].get('FAIL',0)}")
+        except Exception as e:
+            self.temu_img_detail.configure(text=f"素材包处理失败: {e}")
+            self._set_status("⚠ 素材包处理失败")
+
+    def _open_temu_images(self):
+        import os
+        p = temu_img_mod.IMG_DIR
+        p.mkdir(parents=True, exist_ok=True)
+        try:
+            os.startfile(str(p))
+        except Exception:
+            import webbrowser
+            webbrowser.open("file:///" + str(p).replace("\\", "/"))
+
+    def _open_temu_audit(self):
+        import os
+        p = getattr(self, "temu_img_result", {}).get("audit_csv") or (temu_img_mod.DATA / "temu_image_audit.csv")
+        if not Path(p).exists():
+            self.temu_img_detail.configure(text="还没有体检表, 请先点「生成素材包」。")
+            return
+        try:
+            os.startfile(str(p))
+        except Exception:
+            import webbrowser
+            webbrowser.open("file:///" + str(p).replace("\\", "/"))
 
     def _temu_ask_ai(self):
         self._ai_quick("Temu全托管选品测算") if hasattr(self, "_ai_quick") else None
