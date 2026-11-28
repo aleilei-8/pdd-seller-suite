@@ -2060,22 +2060,23 @@ class Workbench(ctk.CTk):
         self._btn(top, "📋 导出建品清单", self._run_temu_build, "green", 140)
         self._btn(top, "📝 导出核价记录表", self._run_temu_record, "orange", 150)
         self._btn(top, "问 AI 助手", self._temu_ask_ai, "ghost", 110)
-        self._hint(f, "核价底线净利率 8%: 买手回价扣完成本后低于此线就弃款。"
-                      "截图/后台操作请用桌面浏览器打开 seller.temu.com。", "info")
-        self._section_label(f, "测算结果", "绿=推荐 · 灰=不推荐(附风险原因)", "green")
-        cols = ["分", "商品ID", "标题", "成本", "建议报价", "核价底线", "砍后净利", "净利率%", "状态"]
-        self.t_temu = Table(f, cols,
-                            widths=[56, 112, 320, 66, 84, 84, 80, 68, 170], height=13)
-        self.t_temu.frame.pack(fill="both", expand=False, padx=14, pady=(2, 4))
-        self.temu_detail = self._info_card(f, "👆 点「筛选并测算」查看供货价拆解; 先到「选品评分」采集 1688 货源。")
-
         # 图片素材包: 下载 -> 保守抠白底 -> 合规质检 -> 导出清单
+        # 放在测算按钮下方, 避免被测算表格挤出窗口可视区(内容区不可滚动)
         sec = self._section(f, "📷 商品图片素材包", "下载推荐款主图, 自动抠白底 + 质检, 不合格明确标记", "purple")
         self._btn(sec, "⬇️ 生成素材包", self._run_temu_images, "blue", 130)
         self._btn(sec, "📂 打开素材目录", self._open_temu_images, "ghost", 140)
         self._btn(sec, "⚠️ 查看图片体检表", self._open_temu_audit, "ghost", 150)
         self._hint(f, "OK=可直接用 · REVIEW=复杂底/带字/贴边, 需重拍或人工去背; 主图必须纯白底≥800px。", "info")
         self.temu_img_detail = self._info_card(f, "先点「筛选并测算」, 再生成素材包; 只处理推荐款。")
+
+        self._hint(f, "核价底线净利率 8%: 买手回价扣完成本后低于此线就弃款。"
+                      "截图/后台操作请用桌面浏览器打开 seller.temu.com。", "info")
+        self._section_label(f, "测算结果", "绿=推荐 · 灰=不推荐(附风险原因)", "green")
+        cols = ["分", "商品ID", "标题", "成本", "建议报价", "核价底线", "砍后净利", "净利率%", "状态"]
+        self.t_temu = Table(f, cols,
+                            widths=[56, 112, 320, 66, 84, 84, 80, 68, 170], height=10)
+        self.t_temu.frame.pack(fill="both", expand=False, padx=14, pady=(2, 4))
+        self.temu_detail = self._info_card(f, "👆 点「筛选并测算」查看供货价拆解; 先到「选品评分」采集 1688 货源。")
 
     def _temu_rows(self):
         products = self.products or temu_mod.load_products()
