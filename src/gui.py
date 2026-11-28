@@ -289,12 +289,20 @@ class _TabHost:
         self._brand_line = ctk.CTkFrame(self.sidebar, height=1, fg_color=UI_BORDER)
         self._brand_line.pack(fill="x", padx=16, pady=(0, 4))
 
+        # 侧栏导航区可滚动: 16 个入口在 720px 高的窗口里会超出屏幕,
+        # 旧版用普通 Frame 直接 pack, 下面的『执行操作』整组根本点不到。
+        self.nav = ctk.CTkScrollableFrame(
+            self.sidebar, fg_color=UI_CARD, corner_radius=0,
+            scrollbar_button_color="#c9d6ea",
+            scrollbar_button_hover_color="#9db4d4")
+        self.nav.pack(fill="both", expand=True)
+
         # 右侧内容堆叠区
         self.content = ctk.CTkFrame(self.root, fg_color="transparent")
         self.content.pack(side="left", fill="both", expand=True)
 
         for g_title, items in self.GROUPS:
-            lab = ctk.CTkLabel(self.sidebar, text=g_title, font=F(11, True),
+            lab = ctk.CTkLabel(self.nav, text=g_title, font=F(11, True),
                                text_color=UI_MUTED)
             lab.pack(anchor="w", padx=16, pady=(14, 4))
             self._group_labels.append((lab, g_title))
@@ -311,7 +319,7 @@ class _TabHost:
         self._pages[name] = pg
 
         btn = ctk.CTkButton(
-            self.sidebar, text=f"  {icon}  {name}", height=50, anchor="w",
+            self.nav, text=f"  {icon}  {name}", height=50, anchor="w",
             font=F(13, True), corner_radius=10, fg_color="transparent",
             hover_color="#eaf2ff", text_color=UI_TEXT, border_width=0,
             command=lambda n=name: self.select(n))
