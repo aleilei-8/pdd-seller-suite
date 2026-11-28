@@ -38,6 +38,9 @@ CFG_PATH = ROOT / "temu_config.json"
 # ---------- 默认配置 ----------
 DEFAULT_CONFIG = {
     "inbound_per_item": 2.0,      # 供应商→Temu国内仓的服务费/件(代发/转发)
+    # 1688 页面运费多为「单件快递 template 价」(常 15~18 元), 全托管批量发货
+    # 实际按整箱摊销, 单件远低于此值。0=按原运费; >0=按该件数摊销。
+    "express_amortize_qty": 50,   # 1688 运费摊销件数(批量发货到国内仓)
     "packaging_fee": 0.5,         # 包装耗材/件
     "wastage_rate": 0.04,         # 损耗备用金(按采购额比例)
     "min_net_margin": 0.08,       # 核价底线净利率: 低于此值弃款
@@ -196,6 +199,9 @@ def price_row(p, cfg: dict = None) -> TemuRow:
     cfg = cfg or DEFAULT_CONFIG
     cost = _num(getattr(p, "price", 0))
     express = _num(getattr(p, "express_fee", 0))
+    amort_qty = _num(cfg.get("express_amortize_qty"), 0)
+    if amort_qty > 0 and express > 0:
+        express = round(express / amort_qty, 2)  # 全托管批量发货: 单件运费按整箱摊销
     weight = _num(getattr(p, "weight_kg", 0))
     if weight <= 0:
         weight = _num(cfg.get("default_weight_kg"), 0.2)
@@ -294,6 +300,9 @@ def render_report(rows: list, cfg: dict = None) -> str:
         f"公式: 报价 = (采购+运费+到仓{cfg.get('inbound_per_item')}+包装{cfg.get('packaging_fee')}"
         f"+损耗{float(cfg.get('wastage_rate',0))*100:.0f}%) ÷ (1−目标净利率{float(cfg.get('target_net_margin',.25))*100:.0f}%) × (1+议价{float(cfg.get('quote_buffer',.12))*100:.0f}%)",
         f"核价底线净利率 {float(cfg.get('min_net_margin',.08))*100:.0f}% — 低于此价弃款",
+        (f"1688 运费按 {int(float(cfg.get('express_amortize_qty',0)))} 件批量摊销(全托管整箱发货)"
+         if float(cfg.get("express_amortize_qty", 0)) > 0
+         else "1688 运费按单件计算"),
         "",
     ]
     if not ok:
