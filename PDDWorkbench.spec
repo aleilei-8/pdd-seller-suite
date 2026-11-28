@@ -21,7 +21,7 @@ hidden = [
     # AI 助手 + 编排/客服只读模块(ai_assistant 内有函数级 import, 显式声明更稳妥)
     "ai_assistant", "monitor", "ad_roi", "finance", "competitor",
     "compliance", "active_words", "cs_scripts", "cs_qa", "cs_aftersales", "cs_sla",
-    "daily_brief", "listing_audit",
+    "daily_brief", "listing_audit", "text_menu", "temu",
 ]
 
 datas = []

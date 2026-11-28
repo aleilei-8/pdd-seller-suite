@@ -10,18 +10,22 @@
   3) 项目根目录     拼多多工作台.lnk   —— 便于拷贝/分发/打包
 
 快捷方式用 wscript.exe 承载 start_workbench.vbs(隐藏控制台, Playwright 不崩),
-图标指向 assets/app.ico(新版 squircle 图标)。
+图标指向 assets/app_v2.ico(app.ico 的版本副本, 换路径打破 Windows 图标缓存)。
 
 用法: python make_shortcut.py
       python make_shortcut.py --no-desktop   (只生成项目内快捷方式)
       python make_shortcut.py --remove       (移除已创建的快捷方式)
 """
 import os
+import shutil
 import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 ICO = ROOT / "assets" / "app.ico"
+# Windows 按「路径」缓存 .lnk 图标: 只改 ico 内容不换路径, 桌面会一直显示旧图。
+# 用一个带版本号的副本作为快捷方式图标源, 每次换版本时同步更新它即可强制刷新。
+ICO_LINK = ROOT / "assets" / "app_v2.ico"
 VBS = ROOT / "start_workbench.vbs"
 NAME = "拼多多工作台.lnk"
 WINDIR = Path(os.environ.get("WINDIR", "C:/Windows"))
@@ -50,7 +54,7 @@ def make(lnk: Path):
     sc.TargetPath = str(WSCRIPT)
     sc.Arguments = '"{}"'.format(VBS)
     sc.WorkingDirectory = str(ROOT)
-    sc.IconLocation = "{},0".format(ICO)
+    sc.IconLocation = "{},0".format(ICO_LINK)
     sc.Description = "拼多多全链路工作台 · 采集 / 上架 / AI 助手"
     sc.WindowStyle = 7  # 最小化(配合 wscript 隐藏控制台)
     sc.save()
@@ -73,6 +77,9 @@ def main():
     if not ICO.is_file():
         print("[ERROR] 缺少图标:", ICO, "请先运行 python make_icon.py")
         return 1
+    if not ICO_LINK.is_file():
+        shutil.copy2(ICO, ICO_LINK)
+        print("COPY    ", ICO_LINK)
     if not VBS.is_file():
         print("[ERROR] 缺少启动脚本:", VBS)
         return 1

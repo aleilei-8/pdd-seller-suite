@@ -24,6 +24,8 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 
 import customtkinter as ctk
 
+import text_menu
+
 import paths as _paths
 _paths.setup_env()
 from paths import ROOT, DATA, SRC
@@ -57,6 +59,7 @@ import cs_aftersales as cs_aftersales_mod
 import cs_sla as cs_sla_mod
 import daily_brief as daily_brief_mod
 import listing_audit as listing_audit_mod
+import temu as temu_mod
 # 注意: title_opt(jieba) 与 suggest(playwright) 体积大, 改为按需惰性导入, 不阻塞启动
 # (用到时再 import, 见 _on_optimize / _build_title_profile / _fetch_suggest)
 
@@ -241,6 +244,7 @@ class _TabHost:
             ("选品评分", "🌟"),
             ("标题优化", "✏️"),
             ("定价利润", "💰"),
+            ("Temu全托管", "🌍"),
             ("店铺分析", "📊"),
         ]),
         ("执行操作", [
@@ -386,6 +390,8 @@ class Workbench(ctk.CTk):
         self.minsize(1100, 720)
         self.configure(fg_color=UI_BG)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        # 全局右键菜单: 所有文本框/输入框/标签文字都能复制(见 text_menu.py)
+        text_menu.install(self)
 
         self.config = self._load_config()
         self.products = []
@@ -496,6 +502,7 @@ class Workbench(ctk.CTk):
         self._tab_select()
         self._tab_title()
         self._tab_price()
+        self._tab_temu()
         self._tab_analysis()
         self._tab_listing()
         self._tab_delist()
@@ -1531,8 +1538,8 @@ class Workbench(ctk.CTk):
                         stale = 0
                     msg = f"已自动恢复上次采集 {len(prods)} 个(来自 data/collected_1688.json)"
                     if stale:
-                        msg += (f" ｜ ⚠ {stale} 条为旧版采集(缺SKU组合/详情图), "
-                                "请到『上架导出』点『升级旧采集数据』重新采集")
+                        msg += (f" ｜ ⚠ {stale} 条商品缺 SKU 组合/详情图(数据不全, 非程序旧版), "
+                                "登录态有效时可到『上架导出』点『升级旧采集数据』重采补齐")
                     self._emit("loaded", msg)
                     return
         except Exception:
@@ -2033,6 +2040,78 @@ class Workbench(ctk.CTk):
             f"= 单件净利 ¥{pb.net_profit}  (净利率 {pb.net_margin}%)"
         ))
 
+    # ===== Tab Temu 全托管 =====
+    def _tab_temu(self):
+        f = self.tabs.tab("Temu全托管")
+        self._hint(f, "🌍 跨境全托管: 你只报供货价 + 把货发到国内仓, 平台管定价/翻译/物流/售后。"
+                      "本页只做本地测算与记录, 不登录、不建品、不报价、不备货。"
+                      "液体/膏霜/带电/品牌IP会被前置拦截(个人店基本过不了合规)。", "danger")
+        top = self._section(f, "供货价测算", "从已采集 1688 商品筛选适合全托管的轻小件", "blue")
+        self._btn(top, "🔍 筛选并测算", self._run_temu_screen, "blue", 130)
+        self._btn(top, "📋 导出建品清单", self._run_temu_build, "green", 140)
+        self._btn(top, "📝 导出核价记录表", self._run_temu_record, "orange", 150)
+        self._btn(top, "问 AI 助手", self._temu_ask_ai, "ghost", 110)
+        self._hint(f, "核价底线净利率 8%: 买手回价扣完成本后低于此线就弃款。"
+                      "截图/后台操作请用桌面浏览器打开 seller.temu.com。", "info")
+        self._section_label(f, "测算结果", "绿=推荐 · 灰=不推荐(附风险原因)", "green")
+        cols = ["分", "商品ID", "标题", "成本", "建议报价", "核价底线", "砍后净利", "净利率%", "状态"]
+        self.t_temu = Table(f, cols,
+                            widths=[56, 112, 320, 66, 84, 84, 80, 68, 170], height=13)
+        self.t_temu.frame.pack(fill="both", expand=False, padx=14, pady=(2, 4))
+        self.temu_detail = self._info_card(f, "👆 点「筛选并测算」查看供货价拆解; 先到「选品评分」采集 1688 货源。")
+
+    def _temu_rows(self):
+        products = self.products or temu_mod.load_products()
+        if not products:
+            return None
+        return temu_mod.screen(products)
+
+    def _run_temu_screen(self):
+        rows = self._temu_rows()
+        if rows is None:
+            self.temu_detail.configure(text="还没有采集数据。请先到「选品评分」采集 1688 商品, 或导入 JSON/CSV。")
+            self._set_status("⚠ 无采集数据")
+            return
+        self.temu_rows_cache = rows
+        for i in self.t_temu.tree.get_children():
+            self.t_temu.tree.delete(i)
+        for r in rows:
+            self.t_temu.tree.insert("", "end", values=(
+                f"{r.score:.0f}" if r.recommend else "—",
+                r.item_id, r.title[:40], f"¥{r.cost_total}", f"¥{r.quote_price}",
+                f"¥{r.floor_price}", f"¥{r.estimated_net}", f"{r.estimated_margin}%",
+                "✓推荐" if r.recommend else ("✗ " + r.risks[:22]),
+            ))
+        self.temu_detail.configure(text=temu_mod.render_report(rows))
+        self._set_status(f"✅ Temu 测算完成: {len(rows)} 款, 推荐 {sum(1 for r in rows if r.recommend)} 款")
+
+    def _run_temu_build(self):
+        rows = getattr(self, "temu_rows_cache", None) or self._temu_rows()
+        if not rows:
+            self.temu_detail.configure(text="请先点「筛选并测算」。")
+            return
+        try:
+            p = temu_mod.export_build_list(rows)
+            self.temu_detail.configure(text=f"✅ 建品清单已导出:\n{p}\n\n用 Excel 打开, 按列填 Temu 后台。")
+            self._set_status(f"✅ 建品清单: {p.name}")
+        except Exception as e:
+            self.temu_detail.configure(text=f"导出失败: {e}")
+
+    def _run_temu_record(self):
+        rows = getattr(self, "temu_rows_cache", None) or self._temu_rows()
+        if not rows:
+            self.temu_detail.configure(text="请先点「筛选并测算」。")
+            return
+        try:
+            p = temu_mod.export_quote_record(rows)
+            self.temu_detail.configure(text=f"✅ 核价记录表已导出:\n{p}\n\n买手回价/寄样/备货状态留空供你手填。")
+            self._set_status(f"✅ 核价记录表: {p.name}")
+        except Exception as e:
+            self.temu_detail.configure(text=f"导出失败: {e}")
+
+    def _temu_ask_ai(self):
+        self._ai_quick("Temu全托管选品测算") if hasattr(self, "_ai_quick") else None
+
     # ===== Tab 4 店铺分析 =====
     def _tab_analysis(self):
         f = self.tabs.tab("店铺分析")
@@ -2174,9 +2253,10 @@ class Workbench(ctk.CTk):
         links = [x for x in links if x]
         if not messagebox.askyesno(
                 "重新采集旧数据",
-                f"检测到 {len(stale)} 条旧版采集数据缺少 SKU 组合 / 详情图。\n\n"
+                f"检测到 {len(stale)} 条商品数据缺少 SKU 组合 / 详情图(数据不全, 非程序旧版)。\n\n"
                 "将用当前采集器重新在线采集这些链接并覆盖，补齐全部 SKU 与图片。\n"
-                "需要 1688 登录态有效；期间请勿关闭弹出的浏览器。\n\n是否继续？"):
+                "需要 1688 登录态有效；若登录已失效，请先到『登录1688』重新登录。\n"
+                "期间请勿关闭弹出的浏览器。\n\n是否继续？"):
             return
 
         def job():

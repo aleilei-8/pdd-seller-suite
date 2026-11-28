@@ -77,6 +77,8 @@ SYSTEM_PROMPT = """你是「拼多多全链路工作台」的 AI 助手, 负责�
 15. listing_audit  商品文案合规体检。扫描已采集商品标题/详情或手动文案里的极限词/违禁词。params: text(可选,手动文案); 无 text 则扫描已采集商品。
 16. chat  自由问答/闲聊/业务咨询, reply 里给出简洁专业的中文回答(可结合消息上下文)
 17. help  问你能做什么
+18. temu_select  Temu 全托管选品测算。从已采集 1688 商品筛出轻小件, 算供货价/核价底线/净利, 拦截液体/带电/品牌IP。无参数。纯本地只读。
+19. temu_price  Temu 供货价测算(单品)。params: cost(1688采购价,必填), express(1688运费), weight(重量kg)。
 
 规则: 只输出 JSON, 不要输出其他任何文字。数字字段输出为数字而非字符串。"""
 
@@ -131,7 +133,7 @@ def llm_parse(text: str, cfg: dict):
             "stock_report", "collect", "ad_report", "finance_report",
             "competitor_report", "review", "chat", "help",
             "cs_script", "cs_qa", "cs_aftersales", "cs_sla",
-            "daily_brief", "listing_audit"):
+            "daily_brief", "listing_audit", "temu_select", "temu_price"):
         return None
     j.setdefault("params", {})
     j.setdefault("reply", "")
@@ -181,7 +183,8 @@ def rule_parse(text: str):
     # 3) 定价测算: 关键词 + 数字
     nums = [float(x) for x in _NUM_RE.findall(t.replace("％", "%"))]
     if any(k in t for k in ("保本", "定价", "售价", "卖多少", "定价多少", "定价", "赚", "利润", "净利")) \
-            and "率" not in t.replace("净利率", "") and nums:
+            and "率" not in t.replace("净利率", "") and nums \
+            and not any(k in t.lower() for k in ("temu", "全托管", "供货价")):
         cost = nums[0]
         inbound = 0.0
         m = re.search(r"运费\s*[:：]?\s*(\d+(?:\.\d+)?)", t)
@@ -202,6 +205,15 @@ def rule_parse(text: str):
                            "target_profit": target_profit,
                            "target_margin": target_margin},
                 "reply": "", "source": "rule"}
+
+    # Temu 全托管(需先于通用"选品/定价/利润"词, 否则会被抢)
+    if any(k in t for k in ("temu", "Temu", "TEMU", "全托管", "跨境供货", "供货价")):
+        if any(k in t for k in ("供货价", "报价", "报多少")) and nums:
+            return {"action": "temu_price",
+                    "params": {"cost": nums[0],
+                               "express": nums[1] if len(nums) >= 2 else 0},
+                    "reply": "", "source": "rule"}
+        return {"action": "temu_select", "params": {}, "reply": "", "source": "rule"}
 
     # 3) 各类报告
     if any(k in t for k in ("选品", "评分", "值得上", "推荐卖什么", "爆款")):
@@ -453,6 +465,7 @@ HELP_TEXT = """🤖 我能帮你做这些(直接说人话就行):
 ⏱ 响应时效   「客服时效」(需先导入聊天CSV; 首响/未回复/高峰)
 📰 全店早报   「今日待办」「全店体检」(跨模块聚合出全店简报+优先待办)
 🛡 文案体检   「合规检查: 全网最低价面膜」(极速扫违禁词给安全替换文案)
+🌍 Temu全托管 「Temu选品测算」(筛轻小件算供货价/核价底线)/「Temu供货价 采购8 运费3」
 🔗 采集预填   直接粘贴 1688 链接, 我帮你填进采集窗口
 ⏰ 定时监控   点上方「定时监控」设置无人值守(价格/库存异常才提醒)
 💬 自由咨询   配置了模型 API 后, 电商问题也可以直接问我
@@ -555,6 +568,38 @@ def run_action(intent: dict, ctx: dict):
                 if not results:
                     return {"reply": "还没有采集到商品。请先采集 1688 货源, 或用「合规检查: 你的文案」直接粘贴文案体检。"}
             return {"reply": listing_audit.render_report(results)}
+        # —— Temu 全托管(纯本地测算, 不登录/不报价/不备货) ——
+        if action == "temu_select":
+            import temu
+            products = ctx.get("products") or temu.load_products()
+            if not products:
+                return {"reply": "还没有 1688 采集数据。请先到「选品评分」采集货源, 再让我筛选 Temu 款。"}
+            rows = temu.screen(products)
+            return {"reply": temu.render_report(rows)}
+        if action == "temu_price":
+            import temu
+            cost = float(params.get("cost") or 0)
+            if cost <= 0:
+                return {"reply": "请告诉我 1688 采购价, 例如: Temu供货价 采购8元 运费3元"}
+            express = float(params.get("express") or 0)
+            weight = float(params.get("weight") or 0) or temu.DEFAULT_CONFIG["default_weight_kg"]
+            cfg = temu.load_config()
+            class _One:
+                pass
+            o = _One()
+            o.item_id, o.title, o.category = "", "单品测算", ""
+            o.price, o.express_fee, o.weight_kg = cost, express, weight
+            o.attributes, o.sourceSku, o.images, o.sale_count = {}, {}, [], 0
+            o.item_url = ""
+            r = temu.price_row(o, cfg)
+            return {"reply": (
+                f"🌍 Temu 全托管供货价测算 (采购¥{cost} + 1688运费¥{express})\n"
+                f"成本合计: ¥{r.cost_total} (含到仓¥{cfg['inbound_per_item']} + 包装¥{cfg['packaging_fee']} + 损耗{cfg['wastage_rate']*100:.0f}%)\n"
+                f"建议报价: ¥{r.quote_price}  ← 报给平台, 留 {cfg['quote_buffer']*100:.0f}% 砍价空间\n"
+                f"核价底线: ¥{r.floor_price}  ← 低于此价净利率<{cfg['min_net_margin']*100:.0f}%, 弃款\n"
+                f"砍到目标价 ¥{r.target_price} 成交 → 净利¥{r.estimated_net} ({r.estimated_margin}%)\n"
+                + (f"⚠ 风险: {r.risks}\n" if r.risks else "")
+                + "\n（纯本地测算, 实际核价以买手回价为准。）")}
     except Exception as e:
         return {"reply": f"执行出错: {e}\n请换个说法重试, 或直接用对应功能页操作。"}
     # chat / help
